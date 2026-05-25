@@ -1,0 +1,276 @@
+package dev.michaelylee.freeblocker.ui
+
+import android.app.Application
+import android.content.Intent
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import dev.michaelylee.freeblocker.ServiceLocator
+import dev.michaelylee.freeblocker.core.DnsProxyServer
+import dev.michaelylee.freeblocker.core.MyVpnService
+import dev.michaelylee.freeblocker.data.BlocklistRepository
+import dev.michaelylee.freeblocker.data.BlocklistState
+import dev.michaelylee.freeblocker.data.UserPreferences
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+/**
+ * Bridges the UI layer to [UserPreferences], [BlocklistRepository], and [MyVpnService].
+ *
+ * All state the UI needs is exposed as [StateFlow]s so Compose can collect them
+ * efficiently. All user actions are plain functions the UI calls directly — no
+ * events/channels needed at this scale.
+ *
+ * Uses [AndroidViewModel] rather than [ViewModel] because starting/stopping
+ * [MyVpnService] requires an [Application] context.
+ */
+class VpnViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val prefs      = UserPreferences(application)
+    private val repository get() = ServiceLocator.blocklistRepository
+
+    // -------------------------------------------------------------------------
+    // VPN on/off state
+    // -------------------------------------------------------------------------
+
+    /**
+     * Whether the VPN is currently active. Persisted in DataStore so the toggle
+     * reflects the correct state after process death and recreation.
+     */
+    val isVpnEnabled: StateFlow<Boolean> = prefs.isVpnEnabledFlow
+        .stateIn(
+            scope         = viewModelScope,
+            started       = SharingStarted.WhileSubscribed(5_000),
+            initialValue  = false,
+        )
+
+    // ── Blocking enabled toggle ───────────────────────────────────────────────────
+
+    /**
+     * Toggles the VPN on or off.
+     *
+     * Persists the new state to DataStore first, then starts or stops the service.
+     * The service reads its own upstream config independently on start, so no
+     * extra coordination is needed here.
+     *
+     * If [isVpnEnabled] is already in the requested state (e.g. double-tap) this
+     * is a no-op at the service level — [MyVpnService.startVpn] guards against
+     * duplicate starts internally.
+     */
+    fun setVpnEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            prefs.setVpnEnabled(enabled)
+            val action = if (enabled) MyVpnService.ACTION_START else MyVpnService.ACTION_STOP
+            val serviceIntent = Intent(getApplication(), MyVpnService::class.java).apply {
+                this.action = action
+            }
+            if (enabled && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                getApplication<Application>().startForegroundService(serviceIntent)
+            } else {
+                getApplication<Application>().startService(serviceIntent)
+            }
+        }
+    }
+
+    /**
+     * Whether DNS filtering is currently active. When false, the VPN tunnel is
+     * still up (traffic is protected / encrypted upstream) but no domains are
+     * blocked. Persisted so the setting survives process death.
+     */
+    val isBlockingEnabled: StateFlow<Boolean> = prefs.isBlockingEnabledFlow
+        .stateIn(
+            scope        = viewModelScope,
+            started      = SharingStarted.WhileSubscribed(5_000),
+            initialValue = true,
+        )
+
+    fun setBlockingEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            prefs.setBlockingEnabled(enabled)
+            // Push the change to the live proxy immediately — no restart needed
+            // since isBlockingEnabled is a plain @Volatile field on DnsProxyServer.
+            // We reach it via the service; if the service isn't running this is a
+            // no-op (the value will be read from prefs when the service next starts).
+            getApplication<Application>().startService(
+                Intent(getApplication(), MyVpnService::class.java).apply {
+                    action = MyVpnService.ACTION_SET_BLOCKING
+                    putExtra(MyVpnService.EXTRA_BLOCKING_ENABLED, enabled)
+                }
+            )
+        }
+    }
+
+    // ── Start on boot ─────────────────────────────────────────────────────────────
+
+    val isStartOnBoot: StateFlow<Boolean> = prefs.isStartOnBootFlow
+        .stateIn(
+            scope        = viewModelScope,
+            started      = SharingStarted.WhileSubscribed(5_000),
+            initialValue = false,
+        )
+
+    fun setStartOnBoot(enabled: Boolean) {
+        viewModelScope.launch { prefs.setStartOnBoot(enabled) }
+    }
+
+    // -------------------------------------------------------------------------
+    // Upstream DNS config
+    // -------------------------------------------------------------------------
+
+    /**
+     * The currently saved upstream resolver.
+     * The UI uses this to show which resolver is active and pre-populate the
+     * settings screen. [MyVpnService] reads this independently via DataStore
+     * on start — the ViewModel doesn't push it to the service directly.
+     */
+    val upstreamConfig: StateFlow<DnsProxyServer.UpstreamConfig> = prefs.upstreamConfigFlow
+        .stateIn(
+            scope        = viewModelScope,
+            started      = SharingStarted.WhileSubscribed(5_000),
+            initialValue = UserPreferences.DEFAULT_UPSTREAM,
+        )
+
+    /**
+     * Saves a new upstream resolver.
+     *
+     * If the VPN is currently running, a restart is required for the change to
+     * take effect. The UI should surface this via [pendingRestartReason].
+     */
+    fun setUpstreamConfig(config: DnsProxyServer.UpstreamConfig) {
+        viewModelScope.launch {
+            prefs.setUpstreamConfig(config)
+            if (isVpnEnabled.value) {
+                _pendingRestartReason.update { PendingRestartReason.UPSTREAM_CHANGED }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Pending restart banner
+    // -------------------------------------------------------------------------
+
+    /**
+     * Set when a settings change requires a VPN restart to take effect.
+     * The UI should show a non-intrusive banner ("Restart VPN to apply changes")
+     * while this is non-null, and clear it once the user restarts or dismisses.
+     */
+    enum class PendingRestartReason { UPSTREAM_CHANGED }
+
+    private val _pendingRestartReason = MutableStateFlow<PendingRestartReason?>(null)
+    val pendingRestartReason: StateFlow<PendingRestartReason?> = _pendingRestartReason.asStateFlow()
+
+    fun dismissRestartBanner() {
+        _pendingRestartReason.update { null }
+    }
+
+    /**
+     * Restarts the VPN to apply pending settings changes, then clears the banner.
+     */
+    fun restartVpn() {
+        setVpnEnabled(false)
+        setVpnEnabled(true)
+        _pendingRestartReason.update { null }
+    }
+
+    // -------------------------------------------------------------------------
+    // Manual blocked domains
+    // -------------------------------------------------------------------------
+
+    val manualBlockedDomains: StateFlow<Set<String>> = prefs.manualBlockedDomainsFlow
+        .stateIn(
+            scope        = viewModelScope,
+            started      = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptySet(),
+        )
+
+    fun addManualBlockedDomain(domain: String) {
+        val cleaned = domain.trim().lowercase()
+        if (cleaned.isBlank()) return
+        viewModelScope.launch { prefs.addManualBlockedDomain(cleaned) }
+    }
+
+    fun removeManualBlockedDomain(domain: String) {
+        viewModelScope.launch { prefs.removeManualBlockedDomain(domain) }
+    }
+
+    // -------------------------------------------------------------------------
+    // Whitelisted domains
+    // -------------------------------------------------------------------------
+
+    val whitelistedDomains: StateFlow<Set<String>> = prefs.whitelistedDomainsFlow
+        .stateIn(
+            scope        = viewModelScope,
+            started      = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptySet(),
+        )
+
+    fun addWhitelistedDomain(domain: String) {
+        val cleaned = domain.trim().lowercase()
+        if (cleaned.isBlank()) return
+        viewModelScope.launch { prefs.addWhitelistedDomain(cleaned) }
+    }
+
+    fun removeWhitelistedDomain(domain: String) {
+        viewModelScope.launch { prefs.removeWhitelistedDomain(domain) }
+    }
+
+    // -------------------------------------------------------------------------
+    // Custom blocklist source URLs
+    // -------------------------------------------------------------------------
+
+    val customSourceUrls: StateFlow<Set<String>> = prefs.customSourceUrlsFlow
+        .stateIn(
+            scope        = viewModelScope,
+            started      = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptySet(),
+        )
+
+    fun addCustomSourceUrl(url: String) {
+        val cleaned = url.trim()
+        if (cleaned.isBlank()) return
+        viewModelScope.launch { prefs.addCustomSourceUrl(cleaned) }
+    }
+
+    fun removeCustomSourceUrl(url: String) {
+        viewModelScope.launch { prefs.removeCustomSourceUrl(url) }
+    }
+
+    // -------------------------------------------------------------------------
+    // Blocklist refresh
+    // -------------------------------------------------------------------------
+
+    /**
+     * Live state of the blocklist download pipeline, sourced directly from
+     * [BlocklistRepository.state]. The UI observes this to show a loading
+     * indicator, a domain count on success, or an error message.
+     *
+     * Possible values:
+     *   [BlocklistState.Idle]    — nothing running, initial state
+     *   [BlocklistState.Loading] — download + parse in progress
+     *   [BlocklistState.Success] — done, carries total domain count
+     *   [BlocklistState.Error]   — failed, carries error message string
+     */
+    val blocklistState: StateFlow<BlocklistState> = repository.state
+        .stateIn(
+            scope        = viewModelScope,
+            started      = SharingStarted.WhileSubscribed(5_000),
+            initialValue = BlocklistState.Idle,
+        )
+
+    /**
+     * Triggers a fresh download and parse of all enabled blocklists via
+     * [BlocklistRepository.loadAndCompileBlocklists]. Pulls the latest custom
+     * source URLs from [UserPreferences] and merges them with the built-in lists.
+     * Ignores the call if a refresh is already in progress.
+     */
+    fun refreshBlocklists() {
+        if (blocklistState.value is BlocklistState.Loading) return
+        viewModelScope.launch {
+            repository.loadAndCompileBlocklists()
+        }
+    }
+}
