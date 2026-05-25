@@ -207,15 +207,21 @@ class MyVpnService : VpnService() {
             .setMtu(1500)
             .establish()
 
-    /**
-     * When the device switches networks, open sockets to resolvers break.
-     * We drain the connection pool so the next query opens a new socket.
-     */
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             Log.i(TAG, "Network change detected — draining upstream connection pool")
             setUnderlyingNetworks(arrayOf(network))
+
+            // The Silver Bullet: Bind the entire VPN process to the physical network.
+            // This natively forces all C++ (Cronet) and Java (OkHttp) sockets to bypass the VPN.
+            connectivityManager?.bindProcessToNetwork(network)
+
             dnsProxy.drainConnections()
+        }
+
+        override fun onLost(network: Network) {
+            // Unbind when the network drops
+            connectivityManager?.bindProcessToNetwork(null)
         }
     }
 
