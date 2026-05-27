@@ -8,8 +8,7 @@ import android.util.Log
  * Used by [TunPacketRouter] to extract DNS queries from raw TUN packets
  * and construct matching response packets for reinjection into the TUN.
  *
- * Only UDP (protocol 17) is handled. TCP DNS requires a full TCP state
- * machine and is deferred to a future pass.
+ * Only UDP (protocol 17) is handled. TCP DNS is rare and a hassle to implement
  */
 object IpPacketParser {
 

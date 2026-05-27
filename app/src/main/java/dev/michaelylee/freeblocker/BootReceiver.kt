@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
-import android.os.Build
 import android.util.Log
 import dev.michaelylee.freeblocker.data.UserPreferences
 import kotlinx.coroutines.CoroutineScope
@@ -15,19 +14,6 @@ import kotlinx.coroutines.launch
 /**
  * Receives ACTION_BOOT_COMPLETED and starts [MyVpnService] if the user had
  * "Start on boot" enabled.
- *
- * Requires in AndroidManifest.xml:
- *   1. Permission:
- *      <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
- *
- *   2. Receiver registration inside <application>:
- *      <receiver
- *          android:name=".core.BootReceiver"
- *          android:exported="true">
- *          <intent-filter>
- *              <action android:name="android.intent.action.BOOT_COMPLETED" />
- *          </intent-filter>
- *      </receiver>
  *
  * NOTE: VPN permission must have been granted by the user at least once before
  * boot autostart will work. VpnService.prepare() returns null (already granted)
@@ -70,11 +56,7 @@ class BootReceiver : BroadcastReceiver() {
                 val serviceIntent = Intent(context, MyVpnService::class.java).apply {
                     action = MyVpnService.ACTION_START
                 }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(serviceIntent)
-                } else {
-                    context.startService(serviceIntent)
-                }
+                context.startForegroundService(serviceIntent)
             } finally {
                 pendingResult.finish()
             }

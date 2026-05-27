@@ -32,8 +32,8 @@ class UserPreferences(private val context: Context) {
          * Example value: "DOT|1.1.1.1|853|cloudflare-dns.com"
          */
         val UPSTREAM_CONFIG      = stringPreferencesKey("upstream_config")
-        val IS_BLOCKING_ENABLED = booleanPreferencesKey("is_blocking_enabled")
-        val IS_START_ON_BOOT    = booleanPreferencesKey("is_start_on_boot")
+        val IS_BLOCKING_ENABLED  = booleanPreferencesKey("is_blocking_enabled")
+        val IS_START_ON_BOOT     = booleanPreferencesKey("is_start_on_boot")
     }
 
     companion object {

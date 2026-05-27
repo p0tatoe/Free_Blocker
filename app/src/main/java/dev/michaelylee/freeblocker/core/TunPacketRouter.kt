@@ -45,7 +45,7 @@ class TunPacketRouter(
         private const val BUFFER_SIZE = 32767  // well above 1500-byte MTU
     }
 
-    /** Synchronises writes to [tunOutput] across concurrent query coroutines. */
+    /** Synchronizes writes to [tunOutput] across concurrent query coroutines. */
     private val outputLock = Any()
 
     /**
@@ -53,7 +53,7 @@ class TunPacketRouter(
      *
      * The loop exits when:
      * - The TUN fd is closed (throws [IOException], normal shutdown)
-     * - The parent coroutine is cancelled
+     * - The parent coroutine is canceled
      */
     suspend fun run() = coroutineScope {
         val buffer = ByteArray(BUFFER_SIZE)
