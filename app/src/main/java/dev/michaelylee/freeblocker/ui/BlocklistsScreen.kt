@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -35,6 +36,7 @@ fun BlocklistsScreen(
 ) {
     val blocklistState by viewModel.blocklistState.collectAsState()
     val customUrls     by viewModel.customSourceUrls.collectAsState()
+    val disabledUrls   by viewModel.disabledBuiltInUrls.collectAsState()
     val builtInSources = DefaultSourceProvider().getSources()
 
     LazyColumn(
@@ -94,6 +96,7 @@ fun BlocklistsScreen(
         }
 
         items(builtInSources, key = { "builtin_${it.url}" }) { source ->
+            val isDisabled = source.url in disabledUrls
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier          = Modifier
@@ -106,6 +109,10 @@ fun BlocklistsScreen(
                             .removePrefix("https://")
                             .substringBefore("/"),
                         style = MaterialTheme.typography.bodyMedium,
+                        color = if (isDisabled)
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        else
+                            MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
                         text  = source.url,
@@ -114,6 +121,36 @@ fun BlocklistsScreen(
                         maxLines = 1,
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                     )
+                    if (isDisabled) {
+                        Text(
+                            text  = "Disabled",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+                if (isDisabled) {
+                    IconButton(onClick = {
+                        viewModel.restoreBuiltInSource(source.url)
+                        viewModel.refreshBlocklists()
+                    }) {
+                        Icon(
+                            Icons.Default.Restore,
+                            contentDescription = "Restore",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                } else {
+                    IconButton(onClick = {
+                        viewModel.removeBuiltInSource(source.url)
+                        viewModel.refreshBlocklists()
+                    }) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = "Remove",
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                    }
                 }
             }
             HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))

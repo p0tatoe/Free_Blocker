@@ -461,7 +461,30 @@ class DnsProxyServer(
     private fun buildMinimalResponse(queryBytes: ByteArray, rcode: Int): ByteArray {
         if (queryBytes.size < 12) return queryBytes
 
-        val response = queryBytes.copyOf()
+        // Find the end of the question section so we truncate any trailing
+        // records (e.g. EDNS0 OPT) from the original query.  Leaving those
+        // bytes in the response while ARCOUNT=0 produces trailing garbage
+        // that strict resolvers (Chrome's async DNS) reject as malformed,
+        // causing a silent fallback to cached/offline content instead of
+        // the expected NXDOMAIN error page.
+        val qdcount = ((queryBytes[4].toInt() and 0xFF) shl 8) or
+                       (queryBytes[5].toInt() and 0xFF)
+        var pos = 12
+        for (i in 0 until qdcount) {
+            // Walk past each QNAME (sequence of length-prefixed labels ending with 0x00)
+            while (pos < queryBytes.size) {
+                val labelLen = queryBytes[pos].toInt() and 0xFF
+                pos++
+                if (labelLen == 0) break          // end-of-name sentinel
+                if (labelLen > 63) break          // compression pointer — shouldn't appear in queries
+                pos += labelLen
+            }
+            pos += 4  // skip QTYPE (2 bytes) + QCLASS (2 bytes)
+        }
+
+        // Clamp to array bounds in case of a malformed query
+        val truncatedLen = pos.coerceAtMost(queryBytes.size)
+        val response = queryBytes.copyOf(truncatedLen)
         val buf      = ByteBuffer.wrap(response)
 
         val rd            = buf.getShort(2).toInt() and 0x0100

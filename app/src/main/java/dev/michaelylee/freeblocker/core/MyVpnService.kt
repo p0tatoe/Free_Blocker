@@ -51,9 +51,10 @@ class MyVpnService : VpnService() {
     companion object {
         private const val TAG = "MyVpnService"
 
-        const val ACTION_START        = "dev.michaelylee.freeblocker.START"
-        const val ACTION_STOP         = "dev.michaelylee.freeblocker.STOP"
-        const val ACTION_SET_BLOCKING = "dev.michaelylee.freeblocker.SET_BLOCKING"
+        const val ACTION_START         = "dev.michaelylee.freeblocker.START"
+        const val ACTION_STOP          = "dev.michaelylee.freeblocker.STOP"
+        const val ACTION_STOP_AND_CLOSE = "dev.michaelylee.freeblocker.STOP_AND_CLOSE"
+        const val ACTION_SET_BLOCKING  = "dev.michaelylee.freeblocker.SET_BLOCKING"
         const val EXTRA_BLOCKING_ENABLED = "blocking_enabled"
 
         private const val NOTIFICATION_ID      = 1
@@ -84,6 +85,14 @@ class MyVpnService : VpnService() {
                 val enabled = intent.getBooleanExtra(EXTRA_BLOCKING_ENABLED, true)
                 dnsProxy.isBlockingEnabled = enabled
                 Log.i(TAG, "Blocking ${if (enabled) "enabled" else "disabled"}")
+
+                // When re-enabling blocking, rebuild the TUN interface to flush
+                // the system DNS cache.  Without this, cached DNS results from
+                // the "blocking disabled" period prevent blocked domains from
+                // being re-queried until their TTL expires.
+                if (enabled && vpnInterface != null) {
+                    serviceScope.launch { rebuildTunInterface() }
+                }
             }
         }
         return START_NOT_STICKY
@@ -112,17 +121,17 @@ class MyVpnService : VpnService() {
             android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
         )
 
-        try {
-            vpnInterface = buildTunInterface() ?: run {
-                Log.e(TAG, "Failed to establish TUN interface")
-                stopVpn()
-                return
-            }
+        serviceScope.launch {
+            try {
+                vpnInterface = buildTunInterface() ?: run {
+                    Log.e(TAG, "Failed to establish TUN interface")
+                    stopVpn()
+                    return@launch
+                }
 
-            startTunLoop()
-            registerNetworkCallback()
+                startTunLoop()
+                registerNetworkCallback()
 
-            serviceScope.launch {
                 // Apply saved upstream config
                 val savedUpstream = userPreferences.getUpstreamConfig()
                 dnsProxy.updateUpstream(savedUpstream)
@@ -132,25 +141,23 @@ class MyVpnService : VpnService() {
                 dnsProxy.isBlockingEnabled = userPreferences.isBlockingEnabledFlow.first()
                 Log.i(TAG, "Blocking enabled: ${dnsProxy.isBlockingEnabled}")
 
+                // Load blocklists in the background so blocking starts
+                // as soon as the download + compile finishes.
+                Log.i(TAG, "Fetching blocklist in background…")
+                blocklistRepository.loadAndCompileBlocklists()
 
+                when (val state = blocklistRepository.state.value) {
+                    is BlocklistState.Success ->
+                        Log.i(TAG, "Blocklist ready — ${state.totalDomains} domains loaded")
+                    is BlocklistState.Error   ->
+                        Log.e(TAG, "Blocklist failed to load: ${state.message}")
+                    else -> Unit
+                }
 
-                // TODO: Re-enable blocklist loading once manual blocking is validated.
-                // Temporarily disabled to isolate the TUN packet pipeline.
-                // Log.i(TAG, "Fetching blocklist in background…")
-                // blocklistRepository.loadAndCompileBlocklists()
-                //
-                // when (val state = blocklistRepository.state.value) {
-                //     is BlocklistState.Success ->
-                //         Log.i(TAG, "Blocklist ready — ${state.totalDomains} domains loaded")
-                //     is BlocklistState.Error   ->
-                //         Log.e(TAG, "Blocklist failed to load: ${state.message}")
-                //     else -> Unit
-                // }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error starting VPN — cleaning up", e)
+                stopVpn()
             }
-
-        } catch (e: Exception) {
-            Log.e(TAG, "Error starting VPN — cleaning up", e)
-            stopVpn()
         }
     }
 
@@ -189,10 +196,38 @@ class MyVpnService : VpnService() {
     }
 
     /**
-     * Builds and establishes the TUN interface to redirect DNS queries to [DnsProxyServer].
+     * Tears down and re-establishes the TUN interface.
+     *
+     * Closing the old file descriptor causes [TunPacketRouter.run] to exit
+     * gracefully (it catches [IOException]).  The new TUN forces Android to
+     * flush its DNS resolver cache, so all apps immediately re-query through
+     * our filter instead of using stale cached results.
      */
-    private fun buildTunInterface(): ParcelFileDescriptor? =
-        Builder()
+    private suspend fun rebuildTunInterface() {
+        Log.i(TAG, "Rebuilding TUN to flush DNS cache…")
+
+        try {
+            vpnInterface?.close()
+        } catch (e: IOException) {
+            Log.w(TAG, "Error closing old TUN fd", e)
+        }
+
+        vpnInterface = buildTunInterface() ?: run {
+            Log.e(TAG, "Failed to re-establish TUN after blocking re-enabled")
+            return
+        }
+
+        startTunLoop()
+        Log.i(TAG, "TUN rebuilt — DNS cache flushed")
+    }
+
+    /**
+     * Builds and establishes the TUN interface to redirect DNS queries to [DnsProxyServer].
+     * Reads whitelisted apps from [UserPreferences] and excludes them from the VPN
+     * via [Builder.addDisallowedApplication].
+     */
+    private suspend fun buildTunInterface(): ParcelFileDescriptor? {
+        val builder = Builder()
             .setSession("FreeBlockerVPN")
             // IPv4 Setup
             .addAddress("10.0.0.2", 32)
@@ -205,7 +240,20 @@ class MyVpnService : VpnService() {
             .addRoute("fd00::1", 128)  // Route IPv6 DNS traffic through TUN
 
             .setMtu(1500)
-            .establish()
+
+        // Exclude whitelisted apps from the VPN tunnel
+        val whitelistedApps = userPreferences.getWhitelistedApps()
+        for (packageName in whitelistedApps) {
+            try {
+                builder.addDisallowedApplication(packageName)
+                Log.d(TAG, "Excluded app from VPN: $packageName")
+            } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
+                Log.w(TAG, "Skipping unknown package: $packageName")
+            }
+        }
+
+        return builder.establish()
+    }
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -259,10 +307,15 @@ class MyVpnService : VpnService() {
             PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val stopIntent = PendingIntent.getService(
-            this, 0,
-            Intent(this, MyVpnService::class.java).apply { action = ACTION_STOP },
-            PendingIntent.FLAG_IMMUTABLE,
+        val stopIntent = PendingIntent.getActivity(
+            this, 1,
+            Intent(this, MainActivity::class.java).apply {
+                action = ACTION_STOP_AND_CLOSE
+                flags  = Intent.FLAG_ACTIVITY_NEW_TASK or
+                         Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                         Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL)

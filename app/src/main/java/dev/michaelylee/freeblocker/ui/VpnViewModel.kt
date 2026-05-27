@@ -158,7 +158,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
      * The UI should show a non-intrusive banner ("Restart VPN to apply changes")
      * while this is non-null, and clear it once the user restarts or dismisses.
      */
-    enum class PendingRestartReason { UPSTREAM_CHANGED }
+    enum class PendingRestartReason { UPSTREAM_CHANGED, APP_WHITELIST_CHANGED }
 
     private val _pendingRestartReason = MutableStateFlow<PendingRestartReason?>(null)
     val pendingRestartReason: StateFlow<PendingRestartReason?> = _pendingRestartReason.asStateFlow()
@@ -235,6 +235,40 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // -------------------------------------------------------------------------
+    // Whitelisted apps (bypass VPN)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Package names of apps whose traffic bypasses the VPN entirely.
+     * Backed by [VpnService.Builder.addDisallowedApplication] at tunnel
+     * creation time.
+     */
+    val whitelistedApps: StateFlow<Set<String>> = prefs.whitelistedAppsFlow
+        .stateIn(
+            scope        = viewModelScope,
+            started      = SharingStarted.WhileSubscribed(5_000),
+            initialValue = UserPreferences.DEFAULT_WHITELISTED_APPS,
+        )
+
+    /**
+     * Toggles whether [packageName] bypasses the VPN.
+     * Persists the change to DataStore and flags a pending restart if the
+     * VPN is currently running (the tunnel must be rebuilt).
+     */
+    fun setAppWhitelisted(packageName: String, whitelisted: Boolean) {
+        viewModelScope.launch {
+            if (whitelisted) {
+                prefs.addWhitelistedApp(packageName)
+            } else {
+                prefs.removeWhitelistedApp(packageName)
+            }
+            if (isVpnEnabled.value) {
+                _pendingRestartReason.update { PendingRestartReason.APP_WHITELIST_CHANGED }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Custom blocklist source URLs
     // -------------------------------------------------------------------------
 
@@ -253,6 +287,42 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     fun removeCustomSourceUrl(url: String) {
         viewModelScope.launch { prefs.removeCustomSourceUrl(url) }
+    }
+
+    // -------------------------------------------------------------------------
+    // Built-in source toggling
+    // -------------------------------------------------------------------------
+
+    /**
+     * Built-in URLs that the user has explicitly removed. The UI uses this
+     * to show all three default sources as deletable list items.
+     */
+    val disabledBuiltInUrls: StateFlow<Set<String>> = prefs.disabledBuiltInUrlsFlow
+        .stateIn(
+            scope        = viewModelScope,
+            started      = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptySet(),
+        )
+
+    /**
+     * Removes a built-in source. Marks a pending restart so the UI can prompt
+     * the user to refresh the blocklist for the change to take effect.
+     */
+    fun removeBuiltInSource(url: String) {
+        viewModelScope.launch {
+            prefs.disableBuiltInUrl(url)
+            _pendingRestartReason.update { PendingRestartReason.UPSTREAM_CHANGED }
+        }
+    }
+
+    /**
+     * Re-enables a previously removed built-in source and marks a pending restart.
+     */
+    fun restoreBuiltInSource(url: String) {
+        viewModelScope.launch {
+            prefs.enableBuiltInUrl(url)
+            _pendingRestartReason.update { PendingRestartReason.UPSTREAM_CHANGED }
+        }
     }
 
     // -------------------------------------------------------------------------

@@ -113,7 +113,11 @@ class BlocklistRepository(
         try {
             val compiled = HashSet<String>(250_000)
             val customUrls = userPreferences.getCustomSourceUrls()
-            val allSources = sourceProvider.getSources() + customUrls.map { FilterSource(it) }
+            val disabledUrls = userPreferences.getDisabledBuiltInUrls()
+
+            val allSources = sourceProvider.getSources()
+                .filter { it.url !in disabledUrls } +
+                customUrls.map { FilterSource(it) }
 
             coroutineScope {
                 allSources

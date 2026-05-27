@@ -15,14 +15,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -45,11 +43,9 @@ import dev.michaelylee.freeblocker.data.BlocklistState
 @Composable
 fun BlockedWebsitesScreen(
     viewModel: VpnViewModel,
-    onRequestVpnPermission: () -> Unit,
     onCloseApp: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val isVpnEnabled      by viewModel.isVpnEnabled.collectAsState()
     val isBlockingEnabled by viewModel.isBlockingEnabled.collectAsState()
     val isStartOnBoot     by viewModel.isStartOnBoot.collectAsState()
     val blocklistState    by viewModel.blocklistState.collectAsState()
@@ -82,18 +78,13 @@ fun BlockedWebsitesScreen(
             item {
                 Spacer(Modifier.height(16.dp))
                 VpnStatusCard(
-                    isVpnEnabled      = isVpnEnabled,
-                    isBlockingEnabled = isBlockingEnabled,
-                    isStartOnBoot     = isStartOnBoot,
-                    blocklistState    = blocklistState,
-                    upstreamHost      = upstream.host,
-                    onVpnToggle       = {
-                        if (!isVpnEnabled) onRequestVpnPermission()
-                        else viewModel.setVpnEnabled(false)
-                    },
-                    onBlockingToggle  = { viewModel.setBlockingEnabled(it) },
+                    isBlockingEnabled   = isBlockingEnabled,
+                    isStartOnBoot       = isStartOnBoot,
+                    blocklistState      = blocklistState,
+                    upstreamHost        = upstream.host,
+                    onBlockingToggle    = { viewModel.setBlockingEnabled(it) },
                     onStartOnBootToggle = { viewModel.setStartOnBoot(it) },
-                    onCloseApp        = onCloseApp,
+                    onCloseApp          = onCloseApp,
                 )
                 Spacer(Modifier.height(16.dp))
             }
@@ -140,21 +131,18 @@ fun BlockedWebsitesScreen(
 
 @Composable
 private fun VpnStatusCard(
-    isVpnEnabled        : Boolean,
     isBlockingEnabled   : Boolean,
     isStartOnBoot       : Boolean,
     blocklistState      : BlocklistState,
     upstreamHost        : String,
-    onVpnToggle         : () -> Unit,
     onBlockingToggle    : (Boolean) -> Unit,
     onStartOnBootToggle : (Boolean) -> Unit,
     onCloseApp          : () -> Unit,
 ) {
-    val containerColor = when {
-        isVpnEnabled && isBlockingEnabled -> MaterialTheme.colorScheme.primaryContainer
-        isVpnEnabled                      -> MaterialTheme.colorScheme.secondaryContainer
-        else                              -> MaterialTheme.colorScheme.surfaceVariant
-    }
+    val containerColor = if (isBlockingEnabled)
+        MaterialTheme.colorScheme.primaryContainer
+    else
+        MaterialTheme.colorScheme.secondaryContainer
 
     Card(
         colors   = CardDefaults.cardColors(containerColor = containerColor),
@@ -162,7 +150,22 @@ private fun VpnStatusCard(
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
 
-            // ── VPN on/off row ────────────────────────────────────────────────
+            // ── Status header ─────────────────────────────────────────────────
+            Text(
+                text  = if (isBlockingEnabled) "Blocking active" else "VPN on · blocking paused",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                text  = "DoQ · $upstreamHost",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+            Spacer(Modifier.height(10.dp))
+
+            // ── Blocking enabled row ──────────────────────────────────────────
             Row(
                 verticalAlignment     = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -170,57 +173,19 @@ private fun VpnStatusCard(
             ) {
                 Column {
                     Text(
-                        text  = when {
-                            isVpnEnabled && isBlockingEnabled -> "Blocking active"
-                            isVpnEnabled                      -> "VPN on · blocking paused"
-                            else                              -> "VPN off"
-                        },
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Text(
-                        text  = "DoQ+DoH · $upstreamHost",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        text  = "Blocking enabled",
+                        style = MaterialTheme.typography.bodyMedium,
                     )
                 }
                 Switch(
-                    checked         = isVpnEnabled,
-                    onCheckedChange = { onVpnToggle() },
+                    checked         = isBlockingEnabled,
+                    onCheckedChange = onBlockingToggle,
                 )
             }
 
-            // ── Blocking enabled row (only shown when VPN is on) ──────────────
-            if (isVpnEnabled) {
-                Spacer(Modifier.height(12.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
-                Spacer(Modifier.height(12.dp))
-
-                Row(
-                    verticalAlignment     = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier              = Modifier.fillMaxWidth(),
-                ) {
-                    Column {
-                        Text(
-                            text  = "Blocking enabled",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        Text(
-                            text  = "Uncheck to pause filtering without stopping VPN",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(
-                        checked         = isBlockingEnabled,
-                        onCheckedChange = onBlockingToggle,
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
 
             // ── Start on boot row ─────────────────────────────────────────────
             Row(
@@ -238,7 +203,7 @@ private fun VpnStatusCard(
                 )
             }
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
             Spacer(Modifier.height(12.dp))
 
@@ -257,12 +222,9 @@ private fun VpnStatusCard(
 
             Spacer(Modifier.height(12.dp))
 
-            // ── Close app button ──────────────────────────────────────────────
-            OutlinedButton(
+            // ── Stop VPN & Close button ───────────────────────────────────────
+            Button(
                 onClick  = onCloseApp,
-                colors   = ButtonDefaults.outlinedButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error,
-                ),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Icon(

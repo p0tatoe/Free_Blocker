@@ -22,22 +22,30 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 class UserPreferences(private val context: Context) {
 
     private object Keys {
-        val IS_VPN_ENABLED       = booleanPreferencesKey("is_vpn_enabled")
-        val MANUAL_BLOCKED       = stringSetPreferencesKey("manual_blocked_domains")
-        val WHITELISTED          = stringSetPreferencesKey("whitelisted_domains")
-        val CUSTOM_SOURCE_URLS   = stringSetPreferencesKey("custom_source_urls")
+        val IS_VPN_ENABLED         = booleanPreferencesKey("is_vpn_enabled")
+        val MANUAL_BLOCKED         = stringSetPreferencesKey("manual_blocked_domains")
+        val WHITELISTED            = stringSetPreferencesKey("whitelisted_domains")
+        val CUSTOM_SOURCE_URLS     = stringSetPreferencesKey("custom_source_urls")
+        /** URLs from the built-in defaults that the user has removed. */
+        val DISABLED_BUILTIN_URLS  = stringSetPreferencesKey("disabled_builtin_urls")
         /**
          * Stores the active upstream as a single encoded string.
          * Encoding format is defined in [UpstreamConfig.encode] /  [UpstreamConfig.decode].
          * Example value: "DOT|1.1.1.1|853|cloudflare-dns.com"
          */
-        val UPSTREAM_CONFIG      = stringPreferencesKey("upstream_config")
-        val IS_BLOCKING_ENABLED  = booleanPreferencesKey("is_blocking_enabled")
-        val IS_START_ON_BOOT     = booleanPreferencesKey("is_start_on_boot")
+        val UPSTREAM_CONFIG        = stringPreferencesKey("upstream_config")
+        val IS_BLOCKING_ENABLED    = booleanPreferencesKey("is_blocking_enabled")
+        val IS_START_ON_BOOT       = booleanPreferencesKey("is_start_on_boot")
+        val WHITELISTED_APPS       = stringSetPreferencesKey("whitelisted_app_packages")
     }
 
     companion object {
         val DEFAULT_UPSTREAM = UpstreamConfig()
+
+        /** Apps that bypass the VPN by default. */
+        val DEFAULT_WHITELISTED_APPS = setOf(
+            "com.google.android.projection.gearhead",  // Android Auto
+        )
     }
 
 
@@ -136,6 +144,30 @@ class UserPreferences(private val context: Context) {
         }
     }
 
+    // ── Disabled built-in sources ─────────────────────────────────────────────
+
+    /** URLs from the built-in defaults that the user has explicitly removed. */
+    val disabledBuiltInUrlsFlow: Flow<Set<String>> = context.dataStore.data
+        .catchIo(emptyPreferences())
+        .map { it[Keys.DISABLED_BUILTIN_URLS] ?: emptySet() }
+
+    suspend fun getDisabledBuiltInUrls(): Set<String> =
+        disabledBuiltInUrlsFlow.first()
+
+    suspend fun disableBuiltInUrl(url: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.DISABLED_BUILTIN_URLS] ?: emptySet()
+            prefs[Keys.DISABLED_BUILTIN_URLS] = current + url.trim()
+        }
+    }
+
+    suspend fun enableBuiltInUrl(url: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.DISABLED_BUILTIN_URLS] ?: emptySet()
+            prefs[Keys.DISABLED_BUILTIN_URLS] = current - url.trim()
+        }
+    }
+
     val isBlockingEnabledFlow: Flow<Boolean> = context.dataStore.data
         .catchIo(emptyPreferences())
         .map { it[Keys.IS_BLOCKING_ENABLED] ?: true }  // default: blocking on
@@ -150,5 +182,33 @@ class UserPreferences(private val context: Context) {
 
     suspend fun setStartOnBoot(enabled: Boolean) {
         context.dataStore.edit { it[Keys.IS_START_ON_BOOT] = enabled }
+    }
+
+    // ── Whitelisted apps (bypass VPN) ─────────────────────────────────────────
+
+    /**
+     * Package names of apps whose traffic bypasses the VPN entirely.
+     * Backed by [VpnService.Builder.addDisallowedApplication] at tunnel
+     * creation time. Defaults to [DEFAULT_WHITELISTED_APPS].
+     */
+    val whitelistedAppsFlow: Flow<Set<String>> = context.dataStore.data
+        .catchIo(emptyPreferences())
+        .map { it[Keys.WHITELISTED_APPS] ?: DEFAULT_WHITELISTED_APPS }
+
+    suspend fun getWhitelistedApps(): Set<String> =
+        whitelistedAppsFlow.first()
+
+    suspend fun addWhitelistedApp(packageName: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.WHITELISTED_APPS] ?: DEFAULT_WHITELISTED_APPS
+            prefs[Keys.WHITELISTED_APPS] = current + packageName
+        }
+    }
+
+    suspend fun removeWhitelistedApp(packageName: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.WHITELISTED_APPS] ?: DEFAULT_WHITELISTED_APPS
+            prefs[Keys.WHITELISTED_APPS] = current - packageName
+        }
     }
 }

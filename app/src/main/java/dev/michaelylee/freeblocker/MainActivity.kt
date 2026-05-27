@@ -1,7 +1,11 @@
 package dev.michaelylee.freeblocker
 
+import android.Manifest
 import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.VpnService
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -22,6 +26,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.core.content.ContextCompat
+import dev.michaelylee.freeblocker.core.MyVpnService
 import dev.michaelylee.freeblocker.ui.AppsScreen
 import dev.michaelylee.freeblocker.ui.BlockedWebsitesScreen
 import dev.michaelylee.freeblocker.ui.BlocklistsScreen
@@ -39,8 +45,40 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Requests POST_NOTIFICATIONS at runtime (required on Android 13+ / API 33+).
+     * After the user responds (grant or deny), we proceed to start the VPN.
+     */
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        // Whether granted or denied, continue starting the VPN.
+        // The foreground service will still run; the notification simply won't
+        // appear if the user chose "Don't allow".
+        requestVpnPermissionIfNeeded()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // On Android 13+ we must ask the user to allow notifications before the
+        // foreground-service notification will appear. If already granted (or on
+        // older API levels), skip straight to starting the VPN.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            // Permission already granted (or API < 33) — start VPN immediately.
+            requestVpnPermissionIfNeeded()
+        }
+
+        // Handle the notification "Stop" action when this activity was not in the back stack.
+        if (intent?.action == MyVpnService.ACTION_STOP_AND_CLOSE) {
+            stopVpnAndClose()
+            return
+        }
 
         setContent {
             var selectedTab by remember { mutableStateOf(0) }
@@ -71,26 +109,34 @@ class MainActivity : ComponentActivity() {
             ) { padding ->
                 when (selectedTab) {
                     0 -> BlockedWebsitesScreen(
-                        viewModel              = viewModel,
-                        onRequestVpnPermission = ::requestVpnPermissionIfNeeded,
-                        onCloseApp             = ::stopVpnAndClose,
-                        modifier               = Modifier.padding(padding),
+                        viewModel  = viewModel,
+                        onCloseApp = ::stopVpnAndClose,
+                        modifier   = Modifier.padding(padding),
                     )
                     1 -> BlocklistsScreen(
                         viewModel = viewModel,
                         modifier  = Modifier.padding(padding),
                     )
                     2 -> AppsScreen(
-                        modifier = Modifier.padding(padding),
+                        viewModel = viewModel,
+                        modifier  = Modifier.padding(padding),
                     )
                 }
             }
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Handle the notification "Stop" button when the activity is already alive.
+        if (intent.action == MyVpnService.ACTION_STOP_AND_CLOSE) {
+            stopVpnAndClose()
+        }
+    }
+
     fun stopVpnAndClose() {
         viewModel.setVpnEnabled(false)
-        finish()
+        finishAndRemoveTask()
     }
 
     fun requestVpnPermissionIfNeeded() {
