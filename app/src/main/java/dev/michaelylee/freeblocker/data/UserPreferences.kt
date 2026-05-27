@@ -37,6 +37,7 @@ class UserPreferences(private val context: Context) {
         val IS_BLOCKING_ENABLED    = booleanPreferencesKey("is_blocking_enabled")
         val IS_START_ON_BOOT       = booleanPreferencesKey("is_start_on_boot")
         val WHITELISTED_APPS       = stringSetPreferencesKey("whitelisted_app_packages")
+        val PAUSED_DOMAINS         = stringSetPreferencesKey("paused_domains")
     }
 
     companion object {
@@ -210,5 +211,58 @@ class UserPreferences(private val context: Context) {
             val current = prefs[Keys.WHITELISTED_APPS] ?: DEFAULT_WHITELISTED_APPS
             prefs[Keys.WHITELISTED_APPS] = current - packageName
         }
+    }
+
+    // ── Paused domains (per-domain temporary unblock) ─────────────────────────
+
+    /**
+     * Persisted pause state for manually blocked domains.
+     * Each entry in the set is encoded as `"domain|expiresAtMillis"`.
+     * [Long.MAX_VALUE] represents an indefinite pause.
+     */
+    val pausedDomainsFlow: Flow<Map<String, Long>> = context.dataStore.data
+        .catchIo(emptyPreferences())
+        .map { prefs ->
+            decodePausedSet(prefs[Keys.PAUSED_DOMAINS] ?: emptySet())
+        }
+
+    suspend fun getPausedDomains(): Map<String, Long> =
+        pausedDomainsFlow.first()
+
+    suspend fun addPausedDomain(domain: String, expiresAt: Long) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.PAUSED_DOMAINS] ?: emptySet()
+            // Remove any existing entry for this domain before adding the new one
+            val cleaned = domain.lowercase().trim()
+            val filtered = current.filterNot { it.startsWith("$cleaned|") }.toSet()
+            prefs[Keys.PAUSED_DOMAINS] = filtered + "$cleaned|$expiresAt"
+        }
+    }
+
+    suspend fun removePausedDomain(domain: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.PAUSED_DOMAINS] ?: emptySet()
+            val cleaned = domain.lowercase().trim()
+            prefs[Keys.PAUSED_DOMAINS] = current.filterNot { it.startsWith("$cleaned|") }.toSet()
+        }
+    }
+
+    suspend fun clearPausedDomains() {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.PAUSED_DOMAINS] = emptySet()
+        }
+    }
+
+    private fun decodePausedSet(encoded: Set<String>): Map<String, Long> {
+        val result = mutableMapOf<String, Long>()
+        for (entry in encoded) {
+            val parts = entry.split("|", limit = 2)
+            if (parts.size == 2) {
+                val domain = parts[0]
+                val expiresAt = parts[1].toLongOrNull() ?: continue
+                result[domain] = expiresAt
+            }
+        }
+        return result
     }
 }

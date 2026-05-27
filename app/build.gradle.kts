@@ -5,16 +5,12 @@ plugins {
 
 android {
     namespace = "dev.michaelylee.freeblocker"
-    compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
-        }
-    }
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "dev.michaelylee.freeblocker"
         minSdk = 34
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 1
         versionName = "1.0"
 

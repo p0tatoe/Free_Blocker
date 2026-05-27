@@ -10,6 +10,8 @@ import dev.michaelylee.freeblocker.core.MyVpnService
 import dev.michaelylee.freeblocker.data.BlocklistRepository
 import dev.michaelylee.freeblocker.data.BlocklistState
 import dev.michaelylee.freeblocker.data.UserPreferences
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -32,6 +34,32 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     private val prefs      = UserPreferences(application)
     private val repository get() = ServiceLocator.blocklistRepository
+
+    /** Active auto-resume coroutines, keyed by domain. */
+    private val pauseTimers = mutableMapOf<String, Job>()
+
+    init {
+        // Restore persisted pauses into the live DnsFilter and schedule
+        // auto-resume timers for any non-indefinite pauses that haven't
+        // expired yet.
+        viewModelScope.launch {
+            val persisted = prefs.getPausedDomains()
+            val now = System.currentTimeMillis()
+            for ((domain, expiresAt) in persisted) {
+                if (expiresAt != Long.MAX_VALUE && now >= expiresAt) {
+                    // Already expired — clean up and skip
+                    prefs.removePausedDomain(domain)
+                    continue
+                }
+                ServiceLocator.dnsFilter.pauseDomain(domain, expiresAt)
+                if (expiresAt != Long.MAX_VALUE) {
+                    schedulePauseTimer(domain, expiresAt - now)
+                }
+            }
+            // Emit initial state
+            _pausedDomains.value = prefs.getPausedDomains()
+        }
+    }
 
     // -------------------------------------------------------------------------
     // VPN on/off state
@@ -198,11 +226,86 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     fun removeManualBlockedDomain(domain: String) {
         val cleaned = domain.trim().lowercase()
-        viewModelScope.launch { prefs.removeManualBlockedDomain(cleaned) }
+        viewModelScope.launch {
+            prefs.removeManualBlockedDomain(cleaned)
+            // Also clear any active pause for this domain
+            prefs.removePausedDomain(cleaned)
+        }
         // Remove from the live filter. If the domain also appears in a
         // remote blocklist it will reappear on the next full refresh,
         // which is the expected behaviour (user should whitelist instead).
         ServiceLocator.dnsFilter.removeDomain(cleaned)
+        cancelPauseTimer(cleaned)
+        _pausedDomains.update { it - cleaned }
+    }
+
+    // -------------------------------------------------------------------------
+    // Per-domain pause
+    // -------------------------------------------------------------------------
+
+    private val _pausedDomains = MutableStateFlow<Map<String, Long>>(emptyMap())
+
+    /**
+     * Currently paused domains and their epoch-millis expiry times.
+     * [Long.MAX_VALUE] represents an indefinite pause.
+     */
+    val pausedDomains: StateFlow<Map<String, Long>> = _pausedDomains.asStateFlow()
+
+    /**
+     * Pauses blocking for [domain] for the given [durationMs].
+     * Pass `null` for an indefinite pause.
+     */
+    fun pauseBlockedDomain(domain: String, durationMs: Long?) {
+        val cleaned = domain.trim().lowercase()
+        val expiresAt = if (durationMs != null)
+            System.currentTimeMillis() + durationMs
+        else
+            Long.MAX_VALUE
+
+        // Update live filter
+        ServiceLocator.dnsFilter.pauseDomain(cleaned, expiresAt)
+
+        // Persist
+        viewModelScope.launch { prefs.addPausedDomain(cleaned, expiresAt) }
+
+        // Update UI state
+        _pausedDomains.update { it + (cleaned to expiresAt) }
+
+        // Schedule auto-resume timer (cancel any existing one first)
+        cancelPauseTimer(cleaned)
+        if (durationMs != null) {
+            schedulePauseTimer(cleaned, durationMs)
+        }
+    }
+
+    /**
+     * Immediately resumes blocking for a previously paused [domain].
+     */
+    fun resumeBlockedDomain(domain: String) {
+        val cleaned = domain.trim().lowercase()
+
+        // Update live filter
+        ServiceLocator.dnsFilter.resumeDomain(cleaned)
+
+        // Persist
+        viewModelScope.launch { prefs.removePausedDomain(cleaned) }
+
+        // Update UI state
+        _pausedDomains.update { it - cleaned }
+
+        cancelPauseTimer(cleaned)
+    }
+
+    private fun schedulePauseTimer(domain: String, delayMs: Long) {
+        pauseTimers[domain] = viewModelScope.launch {
+            delay(delayMs)
+            // Auto-resume when the timer fires
+            resumeBlockedDomain(domain)
+        }
+    }
+
+    private fun cancelPauseTimer(domain: String) {
+        pauseTimers.remove(domain)?.cancel()
     }
 
     // -------------------------------------------------------------------------
