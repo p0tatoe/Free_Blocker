@@ -32,6 +32,7 @@ import dev.michaelylee.freeblocker.ui.AppsScreen
 import dev.michaelylee.freeblocker.ui.BlockedWebsitesScreen
 import dev.michaelylee.freeblocker.ui.BlocklistsScreen
 import dev.michaelylee.freeblocker.ui.VpnViewModel
+import dev.michaelylee.freeblocker.ui.theme.FreeBlockerTheme
 
 class MainActivity : ComponentActivity() {
 
@@ -83,44 +84,46 @@ class MainActivity : ComponentActivity() {
         setContent {
             var selectedTab by remember { mutableStateOf(0) }
 
-            Scaffold(
-                bottomBar = {
-                    NavigationBar {
-                        NavigationBarItem(
-                            selected = selectedTab == 0,
-                            onClick  = { selectedTab = 0 },
-                            icon     = { Icon(Icons.Default.Block, contentDescription = "Blocked") },
-                            label    = { Text("Blocked") },
+            FreeBlockerTheme(darkTheme = true) {
+                Scaffold(
+                    bottomBar = {
+                        NavigationBar {
+                            NavigationBarItem(
+                                selected = selectedTab == 0,
+                                onClick  = { selectedTab = 0 },
+                                icon     = { Icon(Icons.Default.Block, contentDescription = "Blocked") },
+                                label    = { Text("Blocked") },
+                            )
+                            NavigationBarItem(
+                                selected = selectedTab == 1,
+                                onClick  = { selectedTab = 1 },
+                                icon     = { Icon(Icons.Default.Shield, contentDescription = "Blocklists") },
+                                label    = { Text("Blocklists") },
+                            )
+                            NavigationBarItem(
+                                selected = selectedTab == 2,
+                                onClick  = { selectedTab = 2 },
+                                icon     = { Icon(Icons.Default.PhoneAndroid, contentDescription = "Allowed") },
+                                label    = { Text("Allowed") },
+                            )
+                        }
+                    }
+                ) { padding ->
+                    when (selectedTab) {
+                        0 -> BlockedWebsitesScreen(
+                            viewModel  = viewModel,
+                            onCloseApp = ::stopVpnAndClose,
+                            modifier   = Modifier.padding(padding),
                         )
-                        NavigationBarItem(
-                            selected = selectedTab == 1,
-                            onClick  = { selectedTab = 1 },
-                            icon     = { Icon(Icons.Default.Shield, contentDescription = "Blocklists") },
-                            label    = { Text("Blocklists") },
+                        1 -> BlocklistsScreen(
+                            viewModel = viewModel,
+                            modifier  = Modifier.padding(padding),
                         )
-                        NavigationBarItem(
-                            selected = selectedTab == 2,
-                            onClick  = { selectedTab = 2 },
-                            icon     = { Icon(Icons.Default.PhoneAndroid, contentDescription = "Apps") },
-                            label    = { Text("Apps") },
+                        2 -> AppsScreen(
+                            viewModel = viewModel,
+                            modifier  = Modifier.padding(padding),
                         )
                     }
-                }
-            ) { padding ->
-                when (selectedTab) {
-                    0 -> BlockedWebsitesScreen(
-                        viewModel  = viewModel,
-                        onCloseApp = ::stopVpnAndClose,
-                        modifier   = Modifier.padding(padding),
-                    )
-                    1 -> BlocklistsScreen(
-                        viewModel = viewModel,
-                        modifier  = Modifier.padding(padding),
-                    )
-                    2 -> AppsScreen(
-                        viewModel = viewModel,
-                        modifier  = Modifier.padding(padding),
-                    )
                 }
             }
         }

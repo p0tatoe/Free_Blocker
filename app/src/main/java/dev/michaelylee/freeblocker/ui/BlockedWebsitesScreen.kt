@@ -11,11 +11,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -50,6 +55,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.michaelylee.freeblocker.data.BlocklistState
@@ -69,6 +76,7 @@ fun BlockedWebsitesScreen(
     val manualBlocked     by viewModel.manualBlockedDomains.collectAsState()
     val pausedDomains     by viewModel.pausedDomains.collectAsState()
     val snackbarHost      = remember { SnackbarHostState() }
+    var isListVisible     by remember { mutableStateOf(true) }
 
     LaunchedEffect(pendingRestart) {
         if (pendingRestart != null) {
@@ -90,63 +98,115 @@ fun BlockedWebsitesScreen(
             modifier            = Modifier
                 .fillMaxSize()
                 .padding(scaffoldPadding)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(horizontal = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
 
-            // ── Status card ───────────────────────────────────────────────────
+            // ── App Header ────────────────────────────────────────────────────
             item {
-                Spacer(Modifier.height(16.dp))
-                VpnStatusCard(
-                    isBlockingEnabled   = isBlockingEnabled,
-                    isStartOnBoot       = isStartOnBoot,
-                    blocklistState      = blocklistState,
-                    upstreamHost        = upstream.host,
-                    onBlockingToggle    = { viewModel.setBlockingEnabled(it) },
-                    onStartOnBootToggle = { viewModel.setStartOnBoot(it) },
-                    onCloseApp          = onCloseApp,
-                )
-                Spacer(Modifier.height(16.dp))
-            }
-
-            // ── Manual blocked domains ────────────────────────────────────────
-            item {
-                Text(
-                    text     = "Blocked Websites",
-                    style    = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.padding(bottom = 8.dp),
-                )
-                HorizontalDivider()
-                Spacer(Modifier.height(8.dp))
-                DomainInputRow(
-                    placeholder = "e.g. ads.example.com",
-                    onAdd       = { viewModel.addManualBlockedDomain(it) },
-                )
-                Spacer(Modifier.height(8.dp))
-            }
-
-            if (manualBlocked.isEmpty()) {
-                item {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp, bottom = 2.dp)
+                ) {
+                    androidx.compose.foundation.Image(
+                        painter = androidx.compose.ui.res.painterResource(id = dev.michaelylee.freeblocker.R.drawable.ic_launcher_foreground),
+                        contentDescription = "App Icon",
+                        modifier = Modifier.size(56.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
                     Text(
-                        text  = "No websites blocked manually yet.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        text = "Free Block",
+                        style = MaterialTheme.typography.headlineSmall.copy(
+                            fontFamily = dev.michaelylee.freeblocker.ui.theme.RighteousFamily
+                        )
                     )
                 }
             }
 
-            items(manualBlocked.toList(), key = { "blocked_$it" }) { domain ->
-                val expiresAt = pausedDomains[domain]
-                BlockedDomainRow(
-                    domain     = domain,
-                    expiresAt  = expiresAt,
-                    onPause    = { durationMs -> viewModel.pauseBlockedDomain(domain, durationMs) },
-                    onResume   = { viewModel.resumeBlockedDomain(domain) },
-                    onDelete   = { viewModel.removeManualBlockedDomain(domain) },
+            // ── Status card ───────────────────────────────────────────────────
+            item {
+                VpnStatusCard(
+                    isBlockingEnabled   = isBlockingEnabled,
+                    isStartOnBoot       = isStartOnBoot,
+                    onBlockingToggle    = { viewModel.setBlockingEnabled(it) },
+                    onStartOnBootToggle = { viewModel.setStartOnBoot(it) },
+                    onCloseApp          = onCloseApp,
                 )
             }
 
-            item { Spacer(Modifier.height(16.dp)) }
+            // ── Manual blocked domains ────────────────────────────────────────
+            item {
+                Column(
+                    modifier = Modifier
+                        .padding(top = 12.dp, bottom = 4.dp)
+                        .padding(horizontal = 8.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text  = "Blocked Websites",
+                            style = MaterialTheme.typography.titleLarge,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        androidx.compose.material3.FilledIconButton(
+                            onClick = { isListVisible = !isListVisible },
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isListVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                contentDescription = if (isListVisible) "Hide list" else "Show list",
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text  = "${manualBlocked.size} websites blocked manually",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    val blocklistText = when (val s = blocklistState) {
+                        is BlocklistState.Idle    -> ""
+                        is BlocklistState.Loading -> "updating blocklists…"
+                        is BlocklistState.Success -> "${s.totalDomains} domains blocked from blocklists"
+                        is BlocklistState.Error   -> "⚠ error updating blocklists"
+                    }
+                    if (blocklistText.isNotEmpty()) {
+                        Text(
+                            text  = blocklistText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                HorizontalDivider(modifier = Modifier.padding(horizontal = 8.dp))
+                Spacer(Modifier.height(4.dp))
+                DomainInputRow(
+                    placeholder = "e.g. ads.example.com",
+                    onAdd       = { viewModel.addManualBlockedDomain(it) },
+                    modifier    = Modifier.padding(8.dp),
+                )
+            }
+
+            if (isListVisible) {
+                items(manualBlocked.toList(), key = { "blocked_$it" }) { domain ->
+                    val expiresAt = pausedDomains[domain]
+                    BlockedDomainRow(
+                        domain     = domain,
+                        expiresAt  = expiresAt,
+                        onPause    = { durationMs -> viewModel.pauseBlockedDomain(domain, durationMs) },
+                        onResume   = { viewModel.resumeBlockedDomain(domain) },
+                        onDelete   = { viewModel.removeManualBlockedDomain(domain) },
+                    )
+                }
+            }
+
+            item { Spacer(Modifier.height(8.dp)) }
         }
     }
 }
@@ -157,8 +217,6 @@ fun BlockedWebsitesScreen(
 private fun VpnStatusCard(
     isBlockingEnabled   : Boolean,
     isStartOnBoot       : Boolean,
-    blocklistState      : BlocklistState,
-    upstreamHost        : String,
     onBlockingToggle    : (Boolean) -> Unit,
     onStartOnBootToggle : (Boolean) -> Unit,
     onCloseApp          : () -> Unit,
@@ -172,22 +230,7 @@ private fun VpnStatusCard(
         colors   = CardDefaults.cardColors(containerColor = containerColor),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-
-            // ── Status header ─────────────────────────────────────────────────
-            Text(
-                text  = if (isBlockingEnabled) "Blocking active" else "VPN on · blocking paused",
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Text(
-                text  = "DoQ · $upstreamHost",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            Spacer(Modifier.height(10.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
-            Spacer(Modifier.height(10.dp))
+        Column(modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 12.dp)) {
 
             // ── Blocking enabled row ──────────────────────────────────────────
             Row(
@@ -195,21 +238,19 @@ private fun VpnStatusCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier              = Modifier.fillMaxWidth(),
             ) {
-                Column {
-                    Text(
-                        text  = "Blocking enabled",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
+                Text(
+                    text  = "Enable blocking",
+                    style = MaterialTheme.typography.bodyLarge,
+                )
                 Switch(
                     checked         = isBlockingEnabled,
                     onCheckedChange = onBlockingToggle,
                 )
             }
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(2.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(2.dp))
 
             // ── Start on boot row ─────────────────────────────────────────────
             Row(
@@ -218,8 +259,8 @@ private fun VpnStatusCard(
                 modifier              = Modifier.fillMaxWidth(),
             ) {
                 Text(
-                    text  = "Start on device boot",
-                    style = MaterialTheme.typography.bodyMedium,
+                    text  = "Start on boot",
+                    style = MaterialTheme.typography.bodyLarge,
                 )
                 Switch(
                     checked         = isStartOnBoot,
@@ -227,36 +268,66 @@ private fun VpnStatusCard(
                 )
             }
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(2.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
-            Spacer(Modifier.height(12.dp))
 
-            // ── Blocklist state ───────────────────────────────────────────────
-            val stateLabel = when (val s = blocklistState) {
-                is BlocklistState.Idle    -> "Blocklist not loaded"
-                is BlocklistState.Loading -> "Updating blocklist…"
-                is BlocklistState.Success -> "${s.totalDomains} domains blocked"
-                is BlocklistState.Error   -> "⚠ Blocklist error: ${s.message}"
-            }
-            Text(
-                text  = stateLabel,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Spacer(Modifier.height(8.dp))
 
-            Spacer(Modifier.height(12.dp))
-
-            // ── Stop VPN & Close button ───────────────────────────────────────
-            Button(
-                onClick  = onCloseApp,
+            // ── VPN status + Stop button ──────────────────────────────────────
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Icon(
-                    imageVector         = Icons.Default.Close,
-                    contentDescription  = null,
-                    modifier            = Modifier.padding(end = 8.dp),
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "VPN Status:",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    val dotColor = if (isBlockingEnabled) Color(0xFF4CAF50) else Color(0xFFF44336)
+                    Canvas(modifier = Modifier.size(14.dp)) {
+                        drawCircle(color = dotColor)
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = if (isBlockingEnabled) "ON" else "OFF",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = dotColor,
+                    )
+                }
+                Button(onClick = onCloseApp) {
+                    Text("Stop VPN & Close")
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                Text(
+                    text = "WEBSITE",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        textDecoration = TextDecoration.Underline
+                    ),
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clickable { uriHandler.openUri("https://example.com") }
+                        .padding(4.dp),
                 )
-                Text("Stop VPN & Close")
+                Text(
+                    text = "PRIVACY",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        textDecoration = TextDecoration.Underline
+                    ),
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clickable { uriHandler.openUri("https://example.com/privacy") }
+                        .padding(4.dp),
+                )
             }
         }
     }
@@ -323,15 +394,20 @@ private fun BlockedDomainRow(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp),
+            .padding(start = 12.dp, top = 4.dp, end = 8.dp, bottom = 4.dp),
     ) {
         // Domain label
-        Column(modifier = Modifier.weight(1f)) {
+        var isExpanded by remember { mutableStateOf(false) }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .clickable { isExpanded = !isExpanded }
+        ) {
             Text(
                 text      = domain,
                 style     = MaterialTheme.typography.bodyMedium,
-                maxLines  = 1,
-                overflow  = TextOverflow.Ellipsis,
+                maxLines  = if (isExpanded) Int.MAX_VALUE else 1,
+                overflow  = if (isExpanded) TextOverflow.Clip else TextOverflow.Ellipsis,
                 color     = if (isPaused) MaterialTheme.colorScheme.onSurfaceVariant
                             else MaterialTheme.colorScheme.onSurface,
             )
@@ -354,11 +430,9 @@ private fun BlockedDomainRow(
                 ) {
                     Icon(
                         imageVector = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
-                        contentDescription = null,
+                        contentDescription = if (isPaused) "Resume" else "Pause",
                         modifier = Modifier.size(18.dp),
                     )
-                    Spacer(Modifier.width(4.dp))
-                    Text(if (isPaused) "Resume" else "Pause")
                 }
             },
             trailingButton = {
@@ -380,21 +454,40 @@ private fun BlockedDomainRow(
         DropdownMenu(
             expanded         = menuExpanded,
             onDismissRequest = { menuExpanded = false },
+            shape            = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+            modifier         = Modifier.padding(4.dp)
         ) {
             PAUSE_DURATIONS.forEach { duration ->
                 DropdownMenuItem(
-                    text    = { Text(duration.label) },
+                    text    = { Text(duration.label, style = MaterialTheme.typography.bodyLarge) },
                     onClick = {
                         menuExpanded = false
                         onPause(duration.millis)
                     },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Schedule,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 )
             }
-        }
-
-        // Delete button
-        IconButton(onClick = onDelete) {
-            Icon(Icons.Default.Delete, contentDescription = "Remove")
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+            DropdownMenuItem(
+                text = { Text("Delete", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyLarge) },
+                onClick = {
+                    menuExpanded = false
+                    onDelete()
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete",
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
+            )
         }
     }
 }
@@ -402,12 +495,16 @@ private fun BlockedDomainRow(
 // ── Shared sub-composables ────────────────────────────────────────────────────
 
 @Composable
-internal fun DomainInputRow(placeholder: String, onAdd: (String) -> Unit) {
+internal fun DomainInputRow(
+    placeholder: String,
+    onAdd: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     var text by remember { mutableStateOf("") }
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier          = Modifier.fillMaxWidth(),
+        modifier          = modifier.fillMaxWidth(),
     ) {
         OutlinedTextField(
             value         = text,

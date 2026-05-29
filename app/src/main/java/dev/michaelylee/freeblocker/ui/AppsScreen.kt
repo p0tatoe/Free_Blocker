@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -116,23 +117,63 @@ fun AppsScreen(
                 .thenBy { it.label.lowercase() })
     }
 
+    var showInfoDialog by remember { mutableStateOf(false) }
+
+    if (showInfoDialog) {
+        androidx.compose.ui.window.Dialog(onDismissRequest = { showInfoDialog = false }) {
+            androidx.compose.material3.Surface(
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "App Whitelist Info",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Whitelisted apps bypass the VPN — their traffic won't be filtered.\n\nNote: Android Auto is whitelisted by default.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        androidx.compose.material3.TextButton(onClick = { showInfoDialog = false }) {
+                            Text("OK")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Column(modifier = modifier.fillMaxSize()) {
         // ── Header ────────────────────────────────────────────────────────
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text  = "App Whitelist",
                 style = MaterialTheme.typography.headlineSmall,
             )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text  = "Whitelisted apps bypass the VPN — their traffic won't be filtered.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Spacer(Modifier.weight(1f))
+            androidx.compose.material3.IconButton(
+                onClick = { showInfoDialog = true },
+                modifier = Modifier.size(56.dp)
+            ) {
+                Icon(
+                    imageVector = androidx.compose.material.icons.Icons.Outlined.Info,
+                    contentDescription = "Info",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(32.dp)
+                )
+            }
         }
 
         // ── Search bar ────────────────────────────────────────────────────
