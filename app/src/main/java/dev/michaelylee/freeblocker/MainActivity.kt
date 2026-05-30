@@ -75,12 +75,6 @@ class MainActivity : ComponentActivity() {
             requestVpnPermissionIfNeeded()
         }
 
-        // Handle the notification "Stop" action when this activity was not in the back stack.
-        if (intent?.action == MyVpnService.ACTION_STOP_AND_CLOSE) {
-            stopVpnAndClose()
-            return
-        }
-
         setContent {
             var selectedTab by remember { mutableStateOf(0) }
 
@@ -131,10 +125,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // Handle the notification "Stop" button when the activity is already alive.
-        if (intent.action == MyVpnService.ACTION_STOP_AND_CLOSE) {
-            stopVpnAndClose()
-        }
     }
 
     fun stopVpnAndClose() {

@@ -53,7 +53,6 @@ class MyVpnService : VpnService() {
 
         const val ACTION_START         = "dev.michaelylee.freeblocker.START"
         const val ACTION_STOP          = "dev.michaelylee.freeblocker.STOP"
-        const val ACTION_STOP_AND_CLOSE = "dev.michaelylee.freeblocker.STOP_AND_CLOSE"
         const val ACTION_SET_BLOCKING  = "dev.michaelylee.freeblocker.SET_BLOCKING"
         const val EXTRA_BLOCKING_ENABLED = "blocking_enabled"
 
@@ -80,7 +79,10 @@ class MyVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START        -> startVpn()
-            ACTION_STOP         -> stopVpn()
+            ACTION_STOP         -> {
+                serviceScope.launch { userPreferences.setVpnEnabled(false) }
+                stopVpn()
+            }
             ACTION_SET_BLOCKING -> {
                 val enabled = intent.getBooleanExtra(EXTRA_BLOCKING_ENABLED, true)
                 dnsProxy.isBlockingEnabled = enabled
@@ -342,13 +344,10 @@ class MyVpnService : VpnService() {
             PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val stopIntent = PendingIntent.getActivity(
+        val stopIntent = PendingIntent.getService(
             this, 1,
-            Intent(this, MainActivity::class.java).apply {
-                action = ACTION_STOP_AND_CLOSE
-                flags  = Intent.FLAG_ACTIVITY_NEW_TASK or
-                         Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                         Intent.FLAG_ACTIVITY_CLEAR_TOP
+            Intent(this, MyVpnService::class.java).apply {
+                action = ACTION_STOP
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
