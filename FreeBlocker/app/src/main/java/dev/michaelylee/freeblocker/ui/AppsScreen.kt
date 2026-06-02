@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.core.graphics.createBitmap
 
 /**
  * Data class holding the display-relevant info for a single installed app.
@@ -67,10 +68,9 @@ private data class AppInfo(
 /** Converts any [Drawable] to a [Bitmap]. Handles both BitmapDrawable and other types. */
 private fun Drawable.toBitmap(size: Int = 96): Bitmap {
     if (this is BitmapDrawable && bitmap != null) return bitmap
-    val bmp = Bitmap.createBitmap(
+    val bmp = createBitmap(
         if (intrinsicWidth > 0) intrinsicWidth else size,
         if (intrinsicHeight > 0) intrinsicHeight else size,
-        Bitmap.Config.ARGB_8888,
     )
     val canvas = Canvas(bmp)
     setBounds(0, 0, canvas.width, canvas.height)

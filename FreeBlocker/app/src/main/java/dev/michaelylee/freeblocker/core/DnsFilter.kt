@@ -100,21 +100,6 @@ class DnsFilter {
         }
     }
 
-    /** Returns a snapshot of all currently paused domains and their expiry times. */
-    fun getPausedDomains(): Map<String, Long> = HashMap(pausedDomains)
-
-    /** Returns true if [domain] is currently paused (not expired). */
-    fun isDomainPaused(domain: String): Boolean {
-        val cleaned = domain.lowercase().trim()
-        val expiresAt = pausedDomains[cleaned] ?: return false
-        if (expiresAt != Long.MAX_VALUE && System.currentTimeMillis() >= expiresAt) {
-            // Pause expired — auto-resume
-            resumeDomain(cleaned)
-            return false
-        }
-        return true
-    }
-
     fun shouldBlock(domain: String): Boolean {
         if (domain.isEmpty() || blocklist.isEmpty()) return false
 

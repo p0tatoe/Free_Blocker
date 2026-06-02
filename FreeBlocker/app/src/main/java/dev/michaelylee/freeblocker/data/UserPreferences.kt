@@ -29,8 +29,8 @@ class UserPreferences(private val context: Context) {
 
         /**
          * Stores the active upstream as a single encoded string.
-         * Encoding format is defined in [UpstreamConfig.encode] /  [UpstreamConfig.decode].
-         * Example value: "DOT|1.1.1.1|853|cloudflare-dns.com"
+         * Encoding format is defined in [UpstreamConfig.encode] / [UpstreamConfig.decode].
+         * Example value: "94.140.14.14|853|dns.adguard-dns.com|https://dns.adguard-dns.com/dns-query"
          */
         val UPSTREAM_CONFIG        = stringPreferencesKey("upstream_config")
         val IS_BLOCKING_ENABLED    = booleanPreferencesKey("is_blocking_enabled")
@@ -74,8 +74,8 @@ class UserPreferences(private val context: Context) {
 
     /**
      * Persists [config] to DataStore.
-     * [MyVpnService] observes [upstreamConfigFlow] and calls
-     * [DnsProxyServer.updateUpstream] whenever this changes.
+     * [MyVpnService] reads this at TUN startup and passes the host/SNI
+     * to the Rust [DnsProxy] constructor.
      */
     suspend fun setUpstreamConfig(config: UpstreamConfig) {
         context.dataStore.edit { it[Keys.UPSTREAM_CONFIG] = UpstreamConfig.encode(config) }

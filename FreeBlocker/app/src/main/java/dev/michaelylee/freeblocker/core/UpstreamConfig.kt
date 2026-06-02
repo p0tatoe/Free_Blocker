@@ -39,10 +39,7 @@ data class UpstreamConfig(
             if (parts.size != 4) return null
             val port = parts[1].toIntOrNull() ?: return null
             val host = parts[0].ifEmpty { return null }
-            
-            // Migrate users away from Cloudflare because DoQ is not supported on 1.1.1.1
-            if (host == "1.1.1.1") return null
-            
+
             return UpstreamConfig(
                 host        = host,
                 doqPort     = port,

@@ -33,14 +33,16 @@ import java.io.IOException
 
 /**
  * Android VpnService that creates a local TUN interface and routes all DNS traffic
- * through [DnsProxyServer] for blocklist enforcement.
+ * through the Rust-based [DnsProxy] (via UniFFI) for blocklist enforcement.
  *
  * Startup sequence:
  *   1. Build and establish the TUN interface.
- *   2. Start the DNS proxy so queries are answered immediately (empty blocklist
- *      means everything is allowed through until step 3 completes).
+ *   2. Pass the TUN file descriptor to [DnsProxy], which spawns an async Tokio
+ *      loop that reads raw packets, parses IP/UDP/DNS headers, checks the
+ *      blocklist trie, and forwards allowed queries upstream via DoQ.
  *   3. Download and compile the blocklist via [BlocklistRepository] in the
- *      background. Once complete, [DnsFilter] is populated and blocking begins.
+ *      background. Once complete, [DnsFilter] is populated and the blocklist
+ *      is pushed to the Rust proxy via [DnsProxy.updateBlocklist].
  *
  * This means there is a short window at startup where no domains are blocked.
  * The alternative — waiting for the blocklist before starting the proxy — would
@@ -207,10 +209,11 @@ class MyVpnService : VpnService() {
     /**
      * Tears down and re-establishes the TUN interface.
      *
-     * Closing the old file descriptor causes [TunPacketRouter.run] to exit
-     * gracefully (it catches [IOException]).  The new TUN forces Android to
-     * flush its DNS resolver cache, so all apps immediately re-query through
-     * our filter instead of using stale cached results.
+     * Closing the old file descriptor causes the Rust [DnsProxy] read loop to
+     * exit (the TUN fd returns EOF / error).  A new TUN is established and a
+     * fresh [DnsProxy] is started, which also forces Android to flush its DNS
+     * resolver cache so all apps immediately re-query through our filter
+     * instead of using stale cached results.
      */
     private suspend fun rebuildTunInterface() {
         Log.i(TAG, "Rebuilding TUN to flush DNS cache…")
@@ -231,9 +234,9 @@ class MyVpnService : VpnService() {
     }
 
     /**
-     * Builds and establishes the TUN interface to redirect DNS queries to [DnsProxyServer].
-     * Reads whitelisted apps from [UserPreferences] and excludes them from the VPN
-     * via [Builder.addDisallowedApplication].
+     * Builds and establishes the TUN interface to redirect DNS queries to the
+     * Rust [DnsProxy]. Reads whitelisted apps from [UserPreferences] and
+     * excludes them from the VPN via [Builder.addDisallowedApplication].
      */
     private suspend fun buildTunInterface(): ParcelFileDescriptor? {
         if (connectivityManager == null) {
@@ -309,16 +312,14 @@ class MyVpnService : VpnService() {
     }
 
     private fun buildNotification(): Notification {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                NOTIFICATION_CHANNEL,
-                "VPN Status",
-                NotificationManager.IMPORTANCE_LOW,
-            ).apply { description = "Shows while FreeBlocker VPN is active" }
+        val channel = NotificationChannel(
+            NOTIFICATION_CHANNEL,
+            "VPN Status",
+            NotificationManager.IMPORTANCE_LOW,
+        ).apply { description = "Shows while FreeBlocker VPN is active" }
 
-            getSystemService(NotificationManager::class.java)
-                ?.createNotificationChannel(channel)
-        }
+        getSystemService(NotificationManager::class.java)
+            ?.createNotificationChannel(channel)
 
         val openAppIntent = PendingIntent.getActivity(
             this, 0,
