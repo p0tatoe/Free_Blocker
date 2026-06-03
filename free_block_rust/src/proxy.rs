@@ -87,12 +87,13 @@ pub fn create_null_response(sliced: &SlicedPacket, req_payload: &[u8]) -> Option
     let qtype = u16::from_be_bytes([req_payload[idx], req_payload[idx + 1]]);
 
     let builder = match sliced.net.as_ref()? {
-        NetSlice::Ipv4(ipv4) => {
+        etherparse::InternetSlice::Ipv4(ipv4) => {
             PacketBuilder::ipv4(ipv4.header().destination(), ipv4.header().source(), 64)
         }
-        NetSlice::Ipv6(ipv6) => {
+        etherparse::InternetSlice::Ipv6(ipv6) => {
             PacketBuilder::ipv6(ipv6.header().destination(), ipv6.header().source(), 64)
         }
+        _ => return None,
     };
 
     let udp = match sliced.transport.as_ref()? {
@@ -149,12 +150,13 @@ pub fn create_null_response(sliced: &SlicedPacket, req_payload: &[u8]) -> Option
 
 pub fn create_forwarded_response(sliced: &SlicedPacket, req_payload: &[u8], dns_resp: &[u8]) -> Option<Vec<u8>> {
     let builder = match sliced.net.as_ref()? {
-        NetSlice::Ipv4(ipv4) => {
+        etherparse::InternetSlice::Ipv4(ipv4) => {
             PacketBuilder::ipv4(ipv4.header().destination(), ipv4.header().source(), 64)
         }
-        NetSlice::Ipv6(ipv6) => {
+        etherparse::InternetSlice::Ipv6(ipv6) => {
             PacketBuilder::ipv6(ipv6.header().destination(), ipv6.header().source(), 64)
         }
+        _ => return None,
     };
 
     let udp = match sliced.transport.as_ref()? {
@@ -174,4 +176,131 @@ pub fn create_forwarded_response(sliced: &SlicedPacket, req_payload: &[u8], dns_
     builder.write(&mut result, &patched_resp).ok()?;
 
     Some(result)
+}
+
+pub fn create_tcp_rst(sliced: &SlicedPacket) -> Option<Vec<u8>> {
+    use etherparse::{Ipv4Header, Ipv6Header, TcpHeader, InternetSlice, TransportSlice};
+    
+    let tcp = match sliced.transport.as_ref()? {
+        TransportSlice::Tcp(tcp) => tcp,
+        _ => return None,
+    };
+
+    let (mut seq, mut ack) = (0, 0);
+    if tcp.ack() {
+        seq = tcp.acknowledgment_number();
+    } else {
+        ack = tcp.sequence_number().wrapping_add(1);
+    }
+
+    let mut tcp_resp = TcpHeader::new(tcp.destination_port(), tcp.source_port(), seq, 0);
+    tcp_resp.rst = true;
+    tcp_resp.ack = true;
+    tcp_resp.acknowledgment_number = ack;
+
+    let mut buf = Vec::with_capacity(128);
+    match sliced.net.as_ref()? {
+        InternetSlice::Ipv4(ipv4) => {
+            let mut ipv4_resp = Ipv4Header::new(
+                tcp_resp.header_len() as u16,
+                64,
+                etherparse::IpNumber::TCP,
+                ipv4.header().destination(),
+                ipv4.header().source(),
+            ).ok()?;
+            ipv4_resp.write(&mut buf).ok()?;
+            tcp_resp.checksum = tcp_resp.calc_checksum_ipv4(&ipv4_resp, &[]).unwrap_or(0);
+        }
+        InternetSlice::Ipv6(ipv6) => {
+            let ipv6_resp = Ipv6Header {
+                traffic_class: 0,
+                flow_label: etherparse::Ipv6FlowLabel::ZERO,
+                payload_length: tcp_resp.header_len() as u16,
+                next_header: etherparse::IpNumber::TCP,
+                hop_limit: 64,
+                source: ipv6.header().destination(),
+                destination: ipv6.header().source(),
+            };
+            ipv6_resp.write(&mut buf).ok()?;
+            tcp_resp.checksum = tcp_resp.calc_checksum_ipv6(&ipv6_resp, &[]).unwrap_or(0);
+        }
+        _ => return None,
+    }
+    
+    tcp_resp.write(&mut buf).ok()?;
+    Some(buf)
+}
+
+pub fn create_icmp_unreachable(sliced: &SlicedPacket, raw_packet: &[u8]) -> Option<Vec<u8>> {
+    use etherparse::{Ipv4Header, Ipv6Header, Icmpv4Header, Icmpv4Type, icmpv4, Icmpv6Header, Icmpv6Type, icmpv6, InternetSlice};
+    
+    let payload_len = std::cmp::min(raw_packet.len(), 576);
+    let original_bytes = &raw_packet[..payload_len];
+    
+    let mut buf = Vec::with_capacity(payload_len + 64);
+    
+    match sliced.net.as_ref()? {
+        InternetSlice::Ipv4(ipv4) => {
+            let icmp = Icmpv4Header {
+                icmp_type: Icmpv4Type::DestinationUnreachable(icmpv4::DestUnreachableHeader::Port),
+                checksum: 0,
+            };
+            let mut icmp_bytes = icmp.to_bytes();
+            let cksum = etherparse::checksum::Sum16BitWords::new()
+                .add_slice(&icmp_bytes)
+                .add_slice(original_bytes)
+                .ones_complement();
+            let cksum_bytes = cksum.to_be_bytes();
+            icmp_bytes[2] = cksum_bytes[0];
+            icmp_bytes[3] = cksum_bytes[1];
+            
+            let mut ipv4_resp = Ipv4Header::new(
+                (icmp_bytes.len() + original_bytes.len()) as u16,
+                64,
+                etherparse::IpNumber::ICMP,
+                ipv4.header().destination(),
+                ipv4.header().source(),
+            ).ok()?;
+            ipv4_resp.write(&mut buf).ok()?;
+            buf.extend_from_slice(&icmp_bytes);
+            buf.extend_from_slice(original_bytes);
+        }
+        InternetSlice::Ipv6(ipv6) => {
+            let icmp = Icmpv6Header {
+                icmp_type: Icmpv6Type::DestinationUnreachable(icmpv6::DestUnreachableCode::Port),
+                checksum: 0,
+            };
+            
+            let ipv6_resp = Ipv6Header {
+                traffic_class: 0,
+                flow_label: etherparse::Ipv6FlowLabel::ZERO,
+                payload_length: (8 + original_bytes.len()) as u16,
+                next_header: etherparse::IpNumber::IPV6_ICMP,
+                hop_limit: 64,
+                source: ipv6.header().destination(),
+                destination: ipv6.header().source(),
+            };
+            
+            let mut icmp_bytes = icmp.to_bytes();
+            let cksum = etherparse::checksum::Sum16BitWords::new()
+                .add_16bytes(ipv6_resp.source)
+                .add_16bytes(ipv6_resp.destination)
+                .add_4bytes((ipv6_resp.payload_length as u32).to_be_bytes())
+                .add_2bytes([0, 0])
+                .add_2bytes([0, etherparse::IpNumber::IPV6_ICMP.0])
+                .add_slice(&icmp_bytes)
+                .add_slice(original_bytes)
+                .ones_complement();
+                
+            let cksum_bytes = cksum.to_be_bytes();
+            icmp_bytes[2] = cksum_bytes[0];
+            icmp_bytes[3] = cksum_bytes[1];
+            
+            ipv6_resp.write(&mut buf).ok()?;
+            buf.extend_from_slice(&icmp_bytes);
+            buf.extend_from_slice(original_bytes);
+        }
+        _ => return None,
+    }
+    Some(buf)
 }

@@ -3,7 +3,7 @@ uniffi::setup_scaffolding!();
 mod proxy;
 mod quic;
 
-use proxy::{extract_dns_name, to_lowercase_wire_format, to_trie_key, create_null_response, create_forwarded_response};
+use proxy::{extract_dns_name, to_lowercase_wire_format, to_trie_key, create_null_response, create_forwarded_response, create_tcp_rst, create_icmp_unreachable};
 use quic::DoqClient;
 use radix_trie::Trie;
 use std::sync::{Arc, RwLock};
@@ -195,6 +195,14 @@ async fn run_proxy(tun_fd: i32, upstream: String, sni_hostname: String, blocklis
                                     });
                                 }
                             }
+                        } else {
+                            if let Some(resp) = create_icmp_unreachable(&sliced, pkt) {
+                                let _ = unsafe { libc::write(tun_fd, resp.as_ptr() as *const libc::c_void, resp.len()) };
+                            }
+                        }
+                    } else if let Some(etherparse::TransportSlice::Tcp(_)) = sliced.transport.as_ref() {
+                        if let Some(resp) = create_tcp_rst(&sliced) {
+                            let _ = unsafe { libc::write(tun_fd, resp.as_ptr() as *const libc::c_void, resp.len()) };
                         }
                     }
                 }

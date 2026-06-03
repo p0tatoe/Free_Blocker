@@ -250,11 +250,6 @@ class MyVpnService : VpnService() {
             .addDnsServer("10.0.0.1")
             .addRoute("10.0.0.1", 32)  // Route DNS traffic through TUN to our packet router
 
-            // IPv6 Setup
-            .addAddress("fd00::2", 128)
-            .addDnsServer("fd00::1")
-            .addRoute("fd00::1", 128)  // Route IPv6 DNS traffic through TUN
-
             .setMtu(1500)
 
         // Set underlying network explicitly to inherit NET_CAPABILITY_INTERNET immediately
@@ -262,6 +257,9 @@ class MyVpnService : VpnService() {
         if (activeNetwork != null) {
             builder.setUnderlyingNetworks(arrayOf(activeNetwork))
         }
+
+        // Allow apps to explicitly bypass the VPN to fix Google SMS / RCS
+        builder.allowBypass()
 
         // Exclude whitelisted apps from the VPN tunnel
         val whitelistedApps = userPreferences.getWhitelistedApps()
