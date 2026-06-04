@@ -52,8 +52,9 @@ impl DoqClient {
         let mut len_buf = [0u8; 2];
         recv.read_exact(&mut len_buf).await?;
         let resp_len = u16::from_be_bytes(len_buf) as usize;
+        let safe_len = std::cmp::min(resp_len, 8192);
         
-        let mut resp_buf = vec![0u8; resp_len];
+        let mut resp_buf = vec![0u8; safe_len];
         recv.read_exact(&mut resp_buf).await?;
         
         Ok(resp_buf)

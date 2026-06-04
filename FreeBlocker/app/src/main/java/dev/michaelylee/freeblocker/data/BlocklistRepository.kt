@@ -73,13 +73,30 @@ class FilterParser {
 
 class BlocklistFetcher {
     private val parser: FilterParser = FilterParser()
+    private val client = okhttp3.OkHttpClient.Builder()
+        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+
     suspend fun fetch(url: String): Set<String> = withContext(Dispatchers.IO) {
         val result = HashSet<String>()
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.inputStream.bufferedReader().useLines { lines ->
-            lines.forEach {
-                val parsed = parser.parse(it)
-                if (parsed != null) result.add(parsed)
+        val lowerUrl = url.lowercase(Locale.ROOT)
+        if (!lowerUrl.startsWith("http://") && !lowerUrl.startsWith("https://")) {
+            Log.e("BlocklistFetcher", "Invalid URL scheme: $url")
+            return@withContext result
+        }
+
+        val request = okhttp3.Request.Builder().url(url).build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                Log.e("BlocklistFetcher", "HTTP error ${response.code} for $url")
+                return@withContext result
+            }
+            response.body?.charStream()?.buffered()?.useLines { lines ->
+                lines.forEach {
+                    val parsed = parser.parse(it)
+                    if (parsed != null) result.add(parsed)
+                }
             }
         }
         result
@@ -100,7 +117,7 @@ class BlocklistRepository(
     /**
      * Populates DnsFilter with blocklists, user rules, and whitelist rules
      */
-    suspend fun loadAndCompileBlocklists() = withContext(Dispatchers.IO + kotlinx.coroutines.NonCancellable) {
+    suspend fun loadAndCompileBlocklists() = withContext(Dispatchers.IO) {
 
         _state.value = BlocklistState.Loading
 
@@ -149,27 +166,29 @@ class BlocklistRepository(
                     .forEach { remoteCompiled.addAll(it) }
             }
 
-            // Save the newly fetched remote blocklists to the local cache
-            try {
-                cacheFile.bufferedWriter().use { writer ->
-                    remoteCompiled.forEach { 
-                        writer.write(it)
-                        writer.newLine()
+            withContext(kotlinx.coroutines.NonCancellable) {
+                // Save the newly fetched remote blocklists to the local cache
+                try {
+                    cacheFile.bufferedWriter().use { writer ->
+                        remoteCompiled.forEach { 
+                            writer.write(it)
+                            writer.newLine()
+                        }
                     }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to write blocklist cache", e)
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to write blocklist cache", e)
+
+                // 3. Final Merge: Apply the updated lists
+                val finalCompiled = HashSet<String>(remoteCompiled.size + manualBlocks.size)
+                finalCompiled.addAll(remoteCompiled)
+                finalCompiled.addAll(manualBlocks)
+                finalCompiled.removeAll(whitelist)
+
+                dnsFilter.updateBlocklist(finalCompiled)
+
+                _state.value = BlocklistState.Success(remoteCompiled.size)
             }
-
-            // 3. Final Merge: Apply the updated lists
-            val finalCompiled = HashSet<String>(remoteCompiled.size + manualBlocks.size)
-            finalCompiled.addAll(remoteCompiled)
-            finalCompiled.addAll(manualBlocks)
-            finalCompiled.removeAll(whitelist)
-
-            dnsFilter.updateBlocklist(finalCompiled)
-
-            _state.value = BlocklistState.Success(remoteCompiled.size)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load blocklists", e)
             _state.value = BlocklistState.Error(e.message ?: "Unknown error")

@@ -638,6 +638,8 @@ internal object IntegrityCheckingUniffiLib {
     }
     external fun uniffi_free_block_rust_checksum_method_dnsproxy_start(
     ): Short
+    external fun uniffi_free_block_rust_checksum_method_dnsproxy_stop(
+    ): Short
     external fun uniffi_free_block_rust_checksum_method_dnsproxy_update_blocklist(
     ): Short
     external fun uniffi_free_block_rust_checksum_constructor_dnsproxy_new(
@@ -667,6 +669,8 @@ internal object UniffiLib {
     external fun uniffi_free_block_rust_fn_constructor_dnsproxy_new(`tunFd`: Int,`upstreamHost`: RustBuffer.ByValue,`sniHostname`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
     external fun uniffi_free_block_rust_fn_method_dnsproxy_start(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_free_block_rust_fn_method_dnsproxy_stop(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_free_block_rust_fn_method_dnsproxy_update_blocklist(`ptr`: Long,`domains`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
@@ -790,6 +794,9 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_free_block_rust_checksum_method_dnsproxy_start() != 15164.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_free_block_rust_checksum_method_dnsproxy_stop() != 2007.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_free_block_rust_checksum_method_dnsproxy_update_blocklist() != 4148.toShort()) {
@@ -1135,6 +1142,8 @@ public interface DnsProxyInterface {
     
     fun `start`()
     
+    fun `stop`()
+    
     fun `updateBlocklist`(`domains`: List<kotlin.String>)
     
     companion object
@@ -1249,6 +1258,18 @@ open class DnsProxy: Disposable, AutoCloseable, DnsProxyInterface
     callWithHandle {
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_free_block_rust_fn_method_dnsproxy_start(
+        it,
+        _status)
+}
+    }
+    
+    
+
+    override fun `stop`()
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_free_block_rust_fn_method_dnsproxy_stop(
         it,
         _status)
 }

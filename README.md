@@ -1,26 +1,24 @@
 # FreeBlocker
 
-Free Block is a website blocker for Android that works through passing DNS queries through a local VPN. Users can manually enter websites to block, or load in entire blocklists from the internet, to block things like spam or ads.
+Free Block is a website blocker for Android that works by filtering DNS queries with a local VPN. Users can block individual websites, or load in entire blocklists.  
 DISCLOSURE: I used a lot of AI to make this.
 
 ## How it Works
 
-Free Block uses Android's `VpnService` API to establish a local TUN interface. It redirects all device DNS traffic (IPv4 and IPv6) into this tunnel. 
+Free Block uses Android's `VpnService` API to establish a local TUN interface. It redirects all device DNS traffic into this tunnel. The heavy lifting is done by a high-performance Rust core integrated via UniFFI.
 
-1. **Traffic Interception:** The `TunPacketRouter` reads raw IP packets from the TUN interface.
-2. **DNS Extraction:** `IpPacketParser` parses these IP/UDP packets to extract raw DNS queries.
-3. **Filtering:** Queries are evaluated by `DnsFilter` against a compiled list of blocked domains.
+1. **Traffic Interception:** The TUN file descriptor is passed to the Rust `DnsProxy`.
+2. **DNS Extraction:** The Rust proxy uses `etherparse` to parse IP/UDP packets and extract raw DNS queries.
+3. **Filtering:** Queries are evaluated against a compiled Radix Trie in Rust containing blocked domains.
 4. **Resolution or Blocking:**
-   - **Blocked:** If the domain matches a blocklist, FreeBlocker immediately responds with an `NXDOMAIN` (non-existent domain) error, preventing the ad/tracker from loading.
-   - **Allowed:** If the domain is safe, `DnsProxyServer` forwards the query to an encrypted upstream DNS resolver using DNS-over-QUIC (DoQ) with a fallback to DNS-over-HTTPS (DoH). 
+   - **Blocked:** If the domain matches the trie, the proxy immediately responds with a null/unreachable response, preventing the ad/tracker from loading.
+   - **Allowed:** If the domain is safe, the query is forwarded to an upstream DNS resolver using DNS-over-QUIC (DoQ) powered by the `quinn` crate in Rust. 
 
-### Core (`dev.michaelylee.freeblocker.core`)
-The heavy lifting of the VPN and packet processing happens here.
+### Core (`free_block_rust` & `dev.michaelylee.freeblocker.core`)
+The VPN orchestration and packet processing happens across Kotlin and Rust boundaries.
 - `MyVpnService.kt`: The `VpnService` implementation. It manages the TUN interface, handles start/stop intents, and orchestrates the VPN lifecycle.
-- `TunPacketRouter.kt`: Asynchronously reads/writes raw IP packets to/from the TUN file descriptor.
-- `IpPacketParser.kt`: A zero-allocation (where possible) parser for IPv4/IPv6 and UDP headers to extract DNS payloads.
-- `DnsProxyServer.kt`: Handles upstream DNS forwarding. Uses Cronet for high-performance DoQ (HTTP/3) and OkHttp for DoH fallback.
-- `DnsFilter.kt`: Fast, thread-safe domain matching using a Radix tree / Trie structure for the loaded blocklists.
+- `lib.rs` / `quic.rs` / `proxy.rs`: The Rust backend doing asynchronous packet reading/writing (via `tokio`), packet parsing (`etherparse`), DoQ connections (`quinn`), and blocklist enforcement (`radix_trie`).
+- `DnsFilter.kt`: Manages the state of the blocklist in Kotlin (including paused/resumed domains) and syncs it with the Rust proxy.
 
 ### Data (`dev.michaelylee.freeblocker.data`)
 Manages blocklists and user preferences.
@@ -32,15 +30,15 @@ Manages blocklists and user preferences.
 Built entirely in Jetpack Compose with Material 3.
 - `MainActivity.kt`: The single-activity entry point hosting the Compose navigation.
 - `VpnViewModel.kt`: The main ViewModel bridging the UI and the core services. Exposes state via `StateFlow`.
-- `BlockedWebsitesScreen.kt`: Shows the home tab with the master toggle, upstream configuration, and recently blocked/paused domains.
-- `BlocklistsScreen.kt`: Allows users to manage built-in and custom blocklist source URLs.
-- `AppsScreen.kt`: App bypass management, where users can exclude specific installed apps from the VPN tunnel.
+- `BlockedWebsitesScreen.kt`: Shows the home tab with the main controls and blocked/paused websites.
+- `BlocklistsScreen.kt`: Allows users to manage blocklist source URLs.
+- `AppsScreen.kt`: Allows users to exclude apps from the filter.
 
 ### Prerequisites
 - Android Studio Koala (or newer)
+- Rust toolchain (cargo) and UniFFI bindings
 - Minimum SDK: API 34 (Android 14)
 - Target SDK: API 37
 
 ## Planned Features
-- Support for other languages would be nice. 
-- We might want to switch from cronet DoH3 to something like Quiche or Quinn.
+- Support for other languages would be nice.

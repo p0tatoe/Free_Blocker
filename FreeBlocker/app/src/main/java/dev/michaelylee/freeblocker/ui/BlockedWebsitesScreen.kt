@@ -246,7 +246,7 @@ fun BlockedWebsitesScreen(
             }
 
             if (isListVisible) {
-                items(manualBlocked.toList(), key = { "blocked_$it" }) { domain ->
+                items(manualBlocked.toList().sorted(), key = { "blocked_$it" }) { domain ->
                     val expiresAt = pausedDomains[domain]
                     BlockedDomainRow(
                         domain     = domain,

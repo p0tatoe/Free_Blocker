@@ -15,7 +15,7 @@ data class UpstreamConfig(
     val dohUrl      : String = "https://dns.adguard-dns.com/dns-query",
 ) {
     companion object {
-        private const val SEPARATOR = "|"
+        private const val SEPARATOR = "\t"
 
         /**
          * Encodes this config to a single string for DataStore persistence.

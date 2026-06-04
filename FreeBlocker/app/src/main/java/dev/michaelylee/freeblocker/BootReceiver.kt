@@ -1,10 +1,11 @@
-package dev.michaelylee.freeblocker.core
+package dev.michaelylee.freeblocker
 
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.util.Log
+import dev.michaelylee.freeblocker.core.MyVpnService
 import dev.michaelylee.freeblocker.data.UserPreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -18,7 +19,7 @@ import kotlinx.coroutines.launch
  * NOTE: VPN permission must have been granted by the user at least once before
  * boot autostart will work. VpnService.prepare() returns null (already granted)
  * in that case. If it returns a non-null intent, the user hasn't granted
- * permission yet and we can't show UI from a BroadcastReceiver, so we skip.
+ * permission yet, and we can't show UI from a BroadcastReceiver, so we skip.
  */
 class BootReceiver : BroadcastReceiver() {
 

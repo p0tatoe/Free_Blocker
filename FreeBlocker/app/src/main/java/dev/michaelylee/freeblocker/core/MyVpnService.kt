@@ -67,6 +67,7 @@ class MyVpnService : VpnService() {
     private val dnsFilter get() = ServiceLocator.dnsFilter
 
     private var dnsProxy: DnsProxy? = null
+    @Volatile
     private var isBlockingEnabled = true
 
     private val blocklistRepository get() = ServiceLocator.blocklistRepository
@@ -100,7 +101,7 @@ class MyVpnService : VpnService() {
                 }
             }
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     override fun onDestroy() {
@@ -170,6 +171,7 @@ class MyVpnService : VpnService() {
         Log.i(TAG, "Stopping VPN engine…")
 
         unregisterNetworkCallback()
+        dnsProxy?.stop()
         dnsProxy = null
 
         try {
@@ -218,6 +220,9 @@ class MyVpnService : VpnService() {
     private suspend fun rebuildTunInterface() {
         Log.i(TAG, "Rebuilding TUN to flush DNS cache…")
 
+        dnsProxy?.stop()
+        dnsProxy = null
+
         try {
             vpnInterface?.close()
         } catch (e: IOException) {
@@ -249,6 +254,10 @@ class MyVpnService : VpnService() {
             .addAddress("10.0.0.2", 32)
             .addDnsServer("10.0.0.1")
             .addRoute("10.0.0.1", 32)  // Route DNS traffic through TUN to our packet router
+            // IPv6 Setup
+            .addAddress("fd00::1", 128)
+            .addDnsServer("fd00::1")
+            .addRoute("fd00::1", 128)
 
             .setMtu(1500)
 

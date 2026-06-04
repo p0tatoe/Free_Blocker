@@ -123,12 +123,15 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
             // since isBlockingEnabled is a plain @Volatile field on DnsProxyServer.
             // We reach it via the service; if the service isn't running this is a
             // no-op (the value will be read from prefs when the service next starts).
-            getApplication<Application>().startService(
-                Intent(getApplication(), MyVpnService::class.java).apply {
-                    action = MyVpnService.ACTION_SET_BLOCKING
-                    putExtra(MyVpnService.EXTRA_BLOCKING_ENABLED, enabled)
-                }
-            )
+            val serviceIntent = Intent(getApplication(), MyVpnService::class.java).apply {
+                action = MyVpnService.ACTION_SET_BLOCKING
+                putExtra(MyVpnService.EXTRA_BLOCKING_ENABLED, enabled)
+            }
+            if (isVpnEnabled.value && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                getApplication<Application>().startForegroundService(serviceIntent)
+            } else {
+                getApplication<Application>().startService(serviceIntent)
+            }
         }
     }
 
@@ -199,9 +202,12 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
      * Restarts the VPN to apply pending settings changes, then clears the banner.
      */
     fun restartVpn() {
-        setVpnEnabled(false)
-        setVpnEnabled(true)
-        _pendingRestartReason.update { null }
+        viewModelScope.launch {
+            setVpnEnabled(false)
+            delay(500) // Give the service time to tear down the TUN interface
+            setVpnEnabled(true)
+            _pendingRestartReason.update { null }
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -217,7 +223,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     fun addManualBlockedDomain(domain: String) {
         val cleaned = domain.trim().lowercase()
-        if (cleaned.isBlank()) return
+        if (cleaned.isBlank() || cleaned.contains("|")) return
         viewModelScope.launch { prefs.addManualBlockedDomain(cleaned) }
         // Push to the live DNS filter immediately so blocking takes effect
         // without waiting for a full blocklist refresh.
@@ -257,6 +263,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun pauseBlockedDomain(domain: String, durationMs: Long?) {
         val cleaned = domain.trim().lowercase()
+        if (cleaned.contains("|")) return
         val expiresAt = if (durationMs != null)
             System.currentTimeMillis() + durationMs
         else

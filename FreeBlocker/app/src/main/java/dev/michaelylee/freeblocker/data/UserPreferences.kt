@@ -211,6 +211,7 @@ class UserPreferences(private val context: Context) {
             val current = prefs[Keys.PAUSED_DOMAINS] ?: emptySet()
             // Remove any existing entry for this domain before adding the new one
             val cleaned = domain.lowercase().trim()
+            if (cleaned.contains("|")) return@edit
             val filtered = current.filterNot { it.startsWith("$cleaned|") }.toSet()
             prefs[Keys.PAUSED_DOMAINS] = filtered + "$cleaned|$expiresAt"
         }

@@ -148,6 +148,65 @@ pub fn create_null_response(sliced: &SlicedPacket, req_payload: &[u8]) -> Option
     Some(result)
 }
 
+pub fn create_servfail_response(sliced: &etherparse::SlicedPacket, req_payload: &[u8]) -> Option<Vec<u8>> {
+    let builder = match sliced.net.as_ref()? {
+        etherparse::InternetSlice::Ipv4(ipv4) => {
+            etherparse::PacketBuilder::ipv4(ipv4.header().destination(), ipv4.header().source(), 64)
+        }
+        etherparse::InternetSlice::Ipv6(ipv6) => {
+            etherparse::PacketBuilder::ipv6(ipv6.header().destination(), ipv6.header().source(), 64)
+        }
+        _ => return None,
+    };
+
+    let udp = match sliced.transport.as_ref()? {
+        etherparse::TransportSlice::Udp(udp) => udp,
+        _ => return None,
+    };
+
+    let builder = builder.udp(udp.destination_port(), udp.source_port());
+
+    if req_payload.len() < 12 {
+        return None;
+    }
+
+    let mut dns_resp = req_payload.to_vec();
+    // Set QR=1 (response), leave Opcode unchanged, set RCODE=2 (SERVFAIL)
+    dns_resp[2] = (dns_resp[2] | 0x80) & 0xFB; // QR=1, AA=0, TC=0, RD=RD
+    dns_resp[3] = (dns_resp[3] & 0x70) | 0x02; // RA=0, RCODE=2
+
+    // Clear ANCOUNT, NSCOUNT, ARCOUNT
+    for i in 6..12 {
+        dns_resp[i] = 0;
+    }
+
+    // Keep only the question section
+    let mut idx = 12;
+    while idx < dns_resp.len() {
+        let len = dns_resp[idx] as usize;
+        if len == 0 {
+            idx += 1;
+            break;
+        }
+        if (dns_resp[idx] & 0xC0) == 0xC0 {
+            idx += 2;
+            break;
+        }
+        idx += len + 1;
+    }
+    idx += 4; // QTYPE and QCLASS
+    if idx <= dns_resp.len() {
+        dns_resp.truncate(idx);
+    } else {
+        return None; // Malformed query
+    }
+
+    let mut result = Vec::with_capacity(builder.size(dns_resp.len()));
+    builder.write(&mut result, &dns_resp).ok()?;
+
+    Some(result)
+}
+
 pub fn create_forwarded_response(sliced: &SlicedPacket, req_payload: &[u8], dns_resp: &[u8]) -> Option<Vec<u8>> {
     let builder = match sliced.net.as_ref()? {
         etherparse::InternetSlice::Ipv4(ipv4) => {
@@ -186,17 +245,16 @@ pub fn create_tcp_rst(sliced: &SlicedPacket) -> Option<Vec<u8>> {
         _ => return None,
     };
 
-    let (mut seq, mut ack) = (0, 0);
-    if tcp.ack() {
-        seq = tcp.acknowledgment_number();
-    } else {
-        ack = tcp.sequence_number().wrapping_add(1);
-    }
-
-    let mut tcp_resp = TcpHeader::new(tcp.destination_port(), tcp.source_port(), seq, 0);
+    let mut tcp_resp = TcpHeader::new(tcp.destination_port(), tcp.source_port(), 0, 0);
     tcp_resp.rst = true;
-    tcp_resp.ack = true;
-    tcp_resp.acknowledgment_number = ack;
+
+    if tcp.ack() {
+        tcp_resp.sequence_number = tcp.acknowledgment_number();
+        tcp_resp.ack = false;
+    } else {
+        tcp_resp.acknowledgment_number = tcp.sequence_number().wrapping_add(1);
+        tcp_resp.ack = true;
+    }
 
     let mut buf = Vec::with_capacity(128);
     match sliced.net.as_ref()? {

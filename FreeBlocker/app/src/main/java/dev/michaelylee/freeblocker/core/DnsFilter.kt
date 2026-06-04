@@ -26,6 +26,7 @@ class DnsFilter {
      */
     private val pausedDomains = ConcurrentHashMap<String, Long>()
 
+    @Synchronized
     fun updateBlocklist(newBlocklist: Set<String>) {
         this.blocklist = newBlocklist
         Log.d(TAG, "DnsFilter initialized with ${newBlocklist.size} static rules.")
@@ -100,33 +101,7 @@ class DnsFilter {
         }
     }
 
-    fun shouldBlock(domain: String): Boolean {
-        if (domain.isEmpty() || blocklist.isEmpty()) return false
-
-        val candidate = domain.lowercase().trim()
-
-        var startIndex = 0
-        while (startIndex < candidate.length) {
-            val subDomain = if (startIndex == 0) candidate else candidate.substring(startIndex)
-
-            if (blocklist.contains(subDomain)) {
-                Log.i(TAG, "Blocked query for: $domain (matched rule: $subDomain)")
-                return true
-            }
-
-            val dotIndex = candidate.indexOf('.', startIndex)
-            if (dotIndex == -1) break
-
-            // Stop before we reach a bare TLD (e.g. "com") — no blocklist rule
-            // will ever be just a TLD, and checking it is unnecessary work.
-            if (candidate.indexOf('.', dotIndex + 1) == -1) break
-
-            startIndex = dotIndex + 1
-        }
-
-        return false
-    }
-
+    @Synchronized
     fun clear() {
         this.blocklist = emptySet()
         pausedDomains.clear()
