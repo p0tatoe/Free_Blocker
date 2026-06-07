@@ -636,6 +636,8 @@ internal object IntegrityCheckingUniffiLib {
         uniffiCheckContractApiVersion(this)
         uniffiCheckApiChecksums(this)
     }
+    external fun uniffi_free_block_rust_checksum_method_dnsproxy_get_quic_fd(
+    ): Short
     external fun uniffi_free_block_rust_checksum_method_dnsproxy_start(
     ): Short
     external fun uniffi_free_block_rust_checksum_method_dnsproxy_stop(
@@ -668,6 +670,8 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_free_block_rust_fn_constructor_dnsproxy_new(`tunFd`: Int,`upstreamHost`: RustBuffer.ByValue,`sniHostname`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
+    external fun uniffi_free_block_rust_fn_method_dnsproxy_get_quic_fd(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Int
     external fun uniffi_free_block_rust_fn_method_dnsproxy_start(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_free_block_rust_fn_method_dnsproxy_stop(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -793,6 +797,9 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_free_block_rust_checksum_method_dnsproxy_get_quic_fd() != 1705.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_free_block_rust_checksum_method_dnsproxy_start() != 15164.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1140,6 +1147,8 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
 
 public interface DnsProxyInterface {
     
+    fun `getQuicFd`(): kotlin.Int
+    
     fun `start`()
     
     fun `stop`()
@@ -1252,6 +1261,19 @@ open class DnsProxy: Disposable, AutoCloseable, DnsProxyInterface
             UniffiLib.uniffi_free_block_rust_fn_clone_dnsproxy(handle, status)
         }
     }
+
+    override fun `getQuicFd`(): kotlin.Int {
+            return FfiConverterInt.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_free_block_rust_fn_method_dnsproxy_get_quic_fd(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
 
     override fun `start`()
         = 

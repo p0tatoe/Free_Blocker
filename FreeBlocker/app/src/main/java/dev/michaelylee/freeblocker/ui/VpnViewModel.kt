@@ -189,7 +189,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
      * The UI should show a non-intrusive banner ("Restart VPN to apply changes")
      * while this is non-null, and clear it once the user restarts or dismisses.
      */
-    enum class PendingRestartReason { UPSTREAM_CHANGED, APP_WHITELIST_CHANGED }
+    enum class PendingRestartReason { UPSTREAM_CHANGED }
 
     private val _pendingRestartReason = MutableStateFlow<PendingRestartReason?>(null)
     val pendingRestartReason: StateFlow<PendingRestartReason?> = _pendingRestartReason.asStateFlow()
@@ -345,35 +345,42 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // -------------------------------------------------------------------------
-    // Whitelisted apps (bypass VPN)
+    // Target apps (filtered by VPN)
     // -------------------------------------------------------------------------
 
     /**
-     * Package names of apps whose traffic bypasses the VPN entirely.
-     * Backed by [VpnService.Builder.addDisallowedApplication] at tunnel
+     * Package names of apps whose traffic is routed through the VPN.
+     * Backed by [VpnService.Builder.addAllowedApplication] at tunnel
      * creation time.
      */
-    val whitelistedApps: StateFlow<Set<String>> = prefs.whitelistedAppsFlow
+    val filteredApps: StateFlow<Set<String>> = prefs.filteredAppsFlow
         .stateIn(
             scope        = viewModelScope,
             started      = SharingStarted.WhileSubscribed(5_000),
-            initialValue = UserPreferences.DEFAULT_WHITELISTED_APPS,
+            initialValue = UserPreferences.DEFAULT_FILTERED_APPS,
         )
 
     /**
-     * Toggles whether [packageName] bypasses the VPN.
+     * Toggles whether [packageName] is filtered by the VPN.
      * Persists the change to DataStore and flags a pending restart if the
      * VPN is currently running (the tunnel must be rebuilt).
      */
-    fun setAppWhitelisted(packageName: String, whitelisted: Boolean) {
+    fun setAppFiltered(packageName: String, filtered: Boolean) {
         viewModelScope.launch {
-            if (whitelisted) {
-                prefs.addWhitelistedApp(packageName)
+            if (filtered) {
+                prefs.addFilteredApp(packageName)
             } else {
-                prefs.removeWhitelistedApp(packageName)
+                prefs.removeFilteredApp(packageName)
             }
             if (isVpnEnabled.value) {
-                _pendingRestartReason.update { PendingRestartReason.APP_WHITELIST_CHANGED }
+                val serviceIntent = Intent(getApplication(), MyVpnService::class.java).apply {
+                    action = MyVpnService.ACTION_FLUSH_DNS_CACHE
+                }
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    getApplication<Application>().startForegroundService(serviceIntent)
+                } else {
+                    getApplication<Application>().startService(serviceIntent)
+                }
             }
         }
     }

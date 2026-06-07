@@ -35,17 +35,15 @@ class UserPreferences(private val context: Context) {
         val UPSTREAM_CONFIG        = stringPreferencesKey("upstream_config")
         val IS_BLOCKING_ENABLED    = booleanPreferencesKey("is_blocking_enabled")
         val IS_START_ON_BOOT       = booleanPreferencesKey("is_start_on_boot")
-        val WHITELISTED_APPS       = stringSetPreferencesKey("whitelisted_app_packages")
+        val FILTERED_APPS          = stringSetPreferencesKey("filtered_app_packages")
         val PAUSED_DOMAINS         = stringSetPreferencesKey("paused_domains")
     }
 
     companion object {
         val DEFAULT_UPSTREAM = UpstreamConfig()
 
-        /** Apps that bypass the VPN by default. */
-        val DEFAULT_WHITELISTED_APPS = setOf(
-            "com.google.android.projection.gearhead",  // Android Auto
-        )
+        /** Apps that are routed through the VPN by default. */
+        val DEFAULT_FILTERED_APPS = emptySet<String>()
     }
 
 
@@ -162,31 +160,31 @@ class UserPreferences(private val context: Context) {
         context.dataStore.edit { it[Keys.IS_START_ON_BOOT] = enabled }
     }
 
-    // ── Whitelisted apps (bypass VPN) ─────────────────────────────────────────
+    // ── Filtered apps (target VPN) ─────────────────────────────────────────
 
     /**
-     * Package names of apps whose traffic bypasses the VPN entirely.
-     * Backed by [VpnService.Builder.addDisallowedApplication] at tunnel
-     * creation time. Defaults to [DEFAULT_WHITELISTED_APPS].
+     * Package names of apps whose traffic is routed through the VPN.
+     * Backed by [VpnService.Builder.addAllowedApplication] at tunnel
+     * creation time. Defaults to [DEFAULT_FILTERED_APPS].
      */
-    val whitelistedAppsFlow: Flow<Set<String>> = context.dataStore.data
+    val filteredAppsFlow: Flow<Set<String>> = context.dataStore.data
         .catchIo(emptyPreferences())
-        .map { it[Keys.WHITELISTED_APPS] ?: DEFAULT_WHITELISTED_APPS }
+        .map { it[Keys.FILTERED_APPS] ?: DEFAULT_FILTERED_APPS }
 
-    suspend fun getWhitelistedApps(): Set<String> =
-        whitelistedAppsFlow.first()
+    suspend fun getFilteredApps(): Set<String> =
+        filteredAppsFlow.first()
 
-    suspend fun addWhitelistedApp(packageName: String) {
+    suspend fun addFilteredApp(packageName: String) {
         context.dataStore.edit { prefs ->
-            val current = prefs[Keys.WHITELISTED_APPS] ?: DEFAULT_WHITELISTED_APPS
-            prefs[Keys.WHITELISTED_APPS] = current + packageName
+            val current = prefs[Keys.FILTERED_APPS] ?: DEFAULT_FILTERED_APPS
+            prefs[Keys.FILTERED_APPS] = current + packageName
         }
     }
 
-    suspend fun removeWhitelistedApp(packageName: String) {
+    suspend fun removeFilteredApp(packageName: String) {
         context.dataStore.edit { prefs ->
-            val current = prefs[Keys.WHITELISTED_APPS] ?: DEFAULT_WHITELISTED_APPS
-            prefs[Keys.WHITELISTED_APPS] = current - packageName
+            val current = prefs[Keys.FILTERED_APPS] ?: DEFAULT_FILTERED_APPS
+            prefs[Keys.FILTERED_APPS] = current - packageName
         }
     }
 

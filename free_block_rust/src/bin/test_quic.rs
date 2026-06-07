@@ -1,12 +1,13 @@
 #[path = "../quic.rs"]
 pub mod quic;
 
-use quic::DoqClient;
+use quic::DoqEndpoint;
 
 #[tokio::main]
 async fn main() {
     println!("Connecting to DoQ...");
-    let doq = DoqClient::connect("1.1.1.1", "cloudflare-dns.com").await.unwrap();
+    let endpoint = DoqEndpoint::new().unwrap();
+    let doq = endpoint.connect("1.1.1.1", "cloudflare-dns.com").await.unwrap();
     println!("Connected! Sending query...");
 
     // Query for example.com A record

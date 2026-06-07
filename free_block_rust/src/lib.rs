@@ -3,15 +3,27 @@ uniffi::setup_scaffolding!();
 mod proxy;
 mod quic;
 
-use proxy::{extract_dns_name, to_lowercase_wire_format, to_trie_key, create_null_response, create_forwarded_response, create_tcp_rst, create_icmp_unreachable, create_servfail_response};
-use quic::DoqClient;
+use proxy::{extract_dns_name, to_lowercase_wire_format, to_trie_key, create_null_response, create_forwarded_response, create_tcp_rst, create_servfail_response};
+use quic::{DoqEndpoint, DoqClient};
 use radix_trie::Trie;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, OnceLock};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex as TokioMutex;
 use std::num::NonZeroUsize;
 use tokio::sync::mpsc;
 use std::time::{Instant, Duration};
+use tokio_util::sync::CancellationToken;
+
+static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+fn get_runtime() -> &'static Runtime {
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to build Tokio runtime")
+    })
+}
 
 struct CacheEntry {
     payload: Vec<u8>,
@@ -57,36 +69,38 @@ fn get_min_ttl(payload: &[u8]) -> Option<u32> {
 #[derive(uniffi::Object)]
 pub struct DnsProxy {
     tun_fd: i32,
+    quic_fd: i32,
     upstream_host: String,
     sni_hostname: String,
     blocklist: Arc<RwLock<Trie<Vec<u8>, ()>>>,
-    rt: Option<Runtime>,
-    shutdown_tx: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    cancel_token: CancellationToken,
+    doq_endpoint: Arc<DoqEndpoint>,
 }
 
 #[uniffi::export]
 impl DnsProxy {
     #[uniffi::constructor]
     pub fn new(tun_fd: i32, upstream_host: String, sni_hostname: String) -> Arc<Self> {
+        let _guard = get_runtime().enter();
+        let doq_endpoint = Arc::new(DoqEndpoint::new().expect("Failed to create DoQ endpoint"));
+        let quic_fd = doq_endpoint.get_socket_fd();
         Arc::new(Self {
             tun_fd,
+            quic_fd,
             upstream_host,
             sni_hostname,
             blocklist: Arc::new(RwLock::new(Trie::new())),
-            rt: tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .or_else(|_| tokio::runtime::Runtime::new())
-                .ok(),
-            shutdown_tx: std::sync::Mutex::new(None),
+            cancel_token: CancellationToken::new(),
+            doq_endpoint,
         })
     }
 
+    pub fn get_quic_fd(&self) -> i32 {
+        self.quic_fd
+    }
+
     pub fn stop(&self) {
-        let mut lock = self.shutdown_tx.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(tx) = lock.take() {
-            let _ = tx.send(());
-        }
+        self.cancel_token.cancel();
     }
 
     pub fn start(&self) {
@@ -94,19 +108,12 @@ impl DnsProxy {
         let upstream = self.upstream_host.clone();
         let sni_hostname = self.sni_hostname.clone();
         let blocklist = self.blocklist.clone();
+        let cancel_token = self.cancel_token.child_token();
+        let doq_endpoint = self.doq_endpoint.clone();
 
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let mut lock = self.shutdown_tx.lock().unwrap_or_else(|e| e.into_inner());
-        *lock = Some(tx);
-
-        if let Some(rt) = &self.rt {
-            rt.spawn(async move {
-                tokio::select! {
-                    _ = run_proxy(tun_fd, upstream, sni_hostname, blocklist) => {}
-                    _ = rx => {} // shutdown signaled
-                }
-            });
-        }
+        get_runtime().spawn(async move {
+            run_proxy(tun_fd, upstream, sni_hostname, blocklist, cancel_token, doq_endpoint).await;
+        });
     }
 
     pub fn update_blocklist(&self, domains: Vec<String>) {
@@ -137,11 +144,49 @@ fn domain_to_wire_format(domain: &str) -> Vec<u8> {
     out
 }
 
-async fn run_proxy(tun_fd: i32, upstream: String, sni_hostname: String, blocklist: Arc<RwLock<Trie<Vec<u8>, ()>>>) {
+use std::fs::OpenOptions;
+use std::io::Write;
+
+fn log_trace(_msg: &str) {
+    // Logging disabled to prevent synchronous I/O blocking
+    // if let Ok(mut f) = OpenOptions::new().create(true).append(true).open("/data/data/dev.michaelylee.freeblocker/cache/rust.log") {
+    //     let _ = writeln!(f, "{}", msg);
+    // }
+}
+
+async fn run_proxy(
+    tun_fd: i32,
+    upstream: String,
+    sni_hostname: String,
+    blocklist: Arc<RwLock<Trie<Vec<u8>, ()>>>,
+    cancel_token: CancellationToken,
+    doq_endpoint: Arc<DoqEndpoint>,
+) {
+    log_trace("run_proxy started");
     let mut buf = vec![0u8; 65536];
-    let async_fd = match tokio::io::unix::AsyncFd::new(tun_fd) {
-        Ok(fd) => fd,
-        Err(_) => return,
+    let mut async_fd_opt = None;
+    for _ in 0..50 {
+        match tokio::io::unix::AsyncFd::new(tun_fd) {
+            Ok(fd) => {
+                async_fd_opt = Some(fd);
+                break;
+            }
+            Err(e) if e.raw_os_error() == Some(libc::EEXIST) => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Err(e) => {
+                log_trace(&format!("AsyncFd::new failed: {}", e));
+                return;
+            }
+        }
+    }
+    
+    let async_fd = match async_fd_opt {
+        Some(fd) => fd,
+        None => {
+            log_trace("AsyncFd::new failed with EEXIST after 500ms");
+            return;
+        }
     };
     
     let semaphore = Arc::new(tokio::sync::Semaphore::new(100));
@@ -149,14 +194,17 @@ async fn run_proxy(tun_fd: i32, upstream: String, sni_hostname: String, blocklis
         let flags = libc::fcntl(tun_fd, libc::F_GETFL);
         libc::fcntl(tun_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
     }
-    
-    let doq_pool: Arc<TokioMutex<Option<Arc<DoqClient>>>> = Arc::new(TokioMutex::new(None));
+
+    let doq_conn: Arc<TokioMutex<(Option<Arc<DoqClient>>, std::time::Instant)>> = Arc::new(TokioMutex::new((None, std::time::Instant::now() - std::time::Duration::from_secs(10))));
     let cache = Arc::new(TokioMutex::new(lru::LruCache::<Vec<u8>, CacheEntry>::new(NonZeroUsize::new(1000).unwrap())));
 
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1000);
 
     loop {
         tokio::select! {
+            _ = cancel_token.cancelled() => {
+                break;
+            }
             Some(packet) = rx.recv() => {
                 let _ = unsafe { libc::write(tun_fd, packet.as_ptr() as *mut libc::c_void, packet.len()) };
             }
@@ -168,7 +216,6 @@ async fn run_proxy(tun_fd: i32, upstream: String, sni_hostname: String, blocklis
         
         match unsafe { libc::read(tun_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) } {
             n if n > 0 => {
-                guard.retain_ready();
                 let n = n as usize;
                 let pkt = &buf[..n];
                 
@@ -177,6 +224,7 @@ async fn run_proxy(tun_fd: i32, upstream: String, sni_hostname: String, blocklis
                         if udp.destination_port() == 53 {
                             let payload = udp.payload();
                             if let Some(qname) = extract_dns_name(payload) {
+                                log_trace(&format!("Received DNS query for {}", String::from_utf8_lossy(qname)));
                                 // Lowercased forward key for cache lookups
                                 let mut cache_key = to_lowercase_wire_format(qname);
                                 let mut idx = 12;
@@ -222,7 +270,8 @@ async fn run_proxy(tun_fd: i32, upstream: String, sni_hostname: String, blocklis
                                     drop(cache_lock);
                                     
                                     // Forward via DoQ
-                                    let doq_pool = doq_pool.clone();
+                                    let doq_conn = doq_conn.clone();
+                                    let doq_endpoint = doq_endpoint.clone();
                                     let payload_vec = payload.to_vec();
                                     let req_ip = pkt.to_vec();
                                     let cache_key = full_cache_key;
@@ -230,61 +279,114 @@ async fn run_proxy(tun_fd: i32, upstream: String, sni_hostname: String, blocklis
                                     let upstream_clone = upstream.clone();
                                     let tx_clone = tx.clone();
                                     let sni_clone = sni_hostname.clone();
+                                    let task_token = cancel_token.clone();
                                     
                                     if let Ok(permit) = semaphore.clone().try_acquire_owned() {
                                         tokio::spawn(async move {
                                             let _permit = permit;
-                                            let mut retries = 2;
+                                            tokio::select! {
+                                                _ = task_token.cancelled() => {}
+                                                _ = async {
+                                            let mut retries = 30; // Max 3 seconds of waiting (30 * 100ms)
                                             while retries > 0 {
                                                 retries -= 1;
                                                 
-                                                let doq_opt = doq_pool.lock().await.as_ref().filter(|c| c.is_alive()).cloned();
-                                                let doq = if let Some(c) = doq_opt {
-                                                    c
-                                                } else {
-                                                    if let Ok(Ok(c)) = tokio::time::timeout(std::time::Duration::from_secs(3), DoqClient::connect(&upstream_clone, &sni_clone)).await {
-                                                        let arc = Arc::new(c);
-                                                        *doq_pool.lock().await = Some(arc.clone());
-                                                        arc
+                                                let doq = {
+                                                    let mut lock = doq_conn.lock().await;
+                                                    if let Some(c) = lock.0.as_ref().filter(|c| c.is_alive()) {
+                                                        Some(c.clone())
                                                     } else {
-                                                        break;
+                                                        let now = std::time::Instant::now();
+                                                        if now.duration_since(lock.1) < std::time::Duration::from_secs(10) {
+                                                            log_trace("Debouncing DoQ connection");
+                                                            None
+                                                        } else {
+                                                            lock.1 = now;
+                                                            drop(lock); // Drop lock while connecting to prevent blocking other queries!
+                                                            log_trace(&format!("Attempting to connect DoQ to {} with SNI {}", upstream_clone, sni_clone));
+                                                            
+                                                            match tokio::time::timeout(std::time::Duration::from_secs(10), doq_endpoint.connect(&upstream_clone, &sni_clone)).await {
+                                                                Ok(Ok(c)) => {
+                                                                    log_trace("DoQ connection established");
+                                                                    let arc = Arc::new(c);
+                                                                    let mut lock = doq_conn.lock().await;
+                                                                    lock.0 = Some(arc.clone());
+                                                                    lock.1 = std::time::Instant::now() - std::time::Duration::from_secs(10); // Reset debounce
+                                                                    Some(arc)
+                                                                }
+                                                                Ok(Err(e)) => {
+                                                                    log_trace(&format!("DoQ Connect Error: {}", e));
+                                                                    let mut lock = doq_conn.lock().await;
+                                                                    lock.1 = std::time::Instant::now() - std::time::Duration::from_secs(10); // Reset debounce
+                                                                    None
+                                                                }
+                                                                Err(_) => {
+                                                                    log_trace("DoQ Connect Timeout");
+                                                                    let mut lock = doq_conn.lock().await;
+                                                                    lock.1 = std::time::Instant::now() - std::time::Duration::from_secs(10); // Reset debounce
+                                                                    None
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                 };
                                                 
-                                                let query_future = doq.send_query(&payload_vec);
-                                                match tokio::time::timeout(std::time::Duration::from_secs(3), query_future).await {
-                                                    Ok(Ok(resp_payload)) => {
-                                                        if let Ok(sliced) = etherparse::SlicedPacket::from_ip(&req_ip) {
-                                                            if let Some(resp) = create_forwarded_response(&sliced, &payload_vec, &resp_payload) {
-                                                                let _ = tx_clone.try_send(resp);
-                                                                if let Some(ck) = cache_key {
-                                                                    if let Some(ttl) = get_min_ttl(&resp_payload) {
-                                                                        if ttl > 0 {
-                                                                            let mut lock = cache_clone.lock().await;
-                                                                            lock.put(ck, CacheEntry {
-                                                                                payload: resp_payload,
-                                                                                expires_at: Instant::now() + Duration::from_secs(ttl as u64),
-                                                                            });
+                                                if let Some(doq) = doq {
+                                                    log_trace("Sending query via DoQ...");
+                                                    let query_future = doq.send_query(&payload_vec);
+                                                    match tokio::time::timeout(std::time::Duration::from_secs(3), query_future).await {
+                                                        Ok(Ok(resp_payload)) => {
+                                                            log_trace(&format!("Received DoQ response! len={}", resp_payload.len()));
+                                                            if resp_payload.len() >= 12 {
+                                                                let rcode = resp_payload[3] & 0x0F;
+                                                                let ancount = u16::from_be_bytes([resp_payload[6], resp_payload[7]]);
+                                                                log_trace(&format!("DoQ response RCODE={}, ANCOUNT={}", rcode, ancount));
+                                                            }
+                                                            log_trace(&format!("REQ HEX: {:02x?}", payload_vec));
+                                                            log_trace(&format!("RSP HEX: {:02x?}", resp_payload));
+                                                            if let Ok(sliced) = etherparse::SlicedPacket::from_ip(&req_ip) {
+                                                                if let Some(resp) = create_forwarded_response(&sliced, &payload_vec, &resp_payload) {
+                                                                    log_trace("Sending response to TUN channel");
+                                                                    let _ = tx_clone.try_send(resp);
+                                                                    if let Some(ck) = cache_key {
+                                                                        if let Some(ttl) = get_min_ttl(&resp_payload) {
+                                                                            if ttl > 0 {
+                                                                                let mut lock = cache_clone.lock().await;
+                                                                                lock.put(ck, CacheEntry {
+                                                                                    payload: resp_payload,
+                                                                                    expires_at: std::time::Instant::now() + std::time::Duration::from_secs(ttl as u64),
+                                                                                });
+                                                                            }
                                                                         }
                                                                     }
                                                                 }
                                                             }
+                                                            break;
                                                         }
-                                                        break;
+                                                        _ => {
+                                                            log_trace("send_query failed or timed out");
+                                                            // Timeout or Error from DoQ
+                                                            let mut lock = doq_conn.lock().await;
+                                                            lock.0 = None;
+                                                            // Loop continues to retry connection
+                                                        }
                                                     }
-                                                    _ => {
-                                                        // Timeout or Error from DoQ
-                                                        let mut lock = doq_pool.lock().await;
-                                                        *lock = None;
-                                                        if retries == 0 {
-                                                            if let Ok(sliced) = etherparse::SlicedPacket::from_ip(&req_ip) {
-                                                                if let Some(resp) = create_servfail_response(&sliced, &payload_vec) {
-                                                                    let _ = tx_clone.try_send(resp);
-                                                                }
+                                                } else {
+                                                    // Failed to connect, or waiting for another query to finish connecting
+                                                    if retries == 0 {
+                                                        if let Ok(sliced) = etherparse::SlicedPacket::from_ip(&req_ip) {
+                                                            if let Some(resp) = create_servfail_response(&sliced, &payload_vec) {
+                                                                let _ = tx_clone.try_send(resp);
                                                             }
                                                         }
+                                                        break; // We've waited 3 seconds. Send SERVFAIL and give up.
                                                     }
+                                                    
+                                                    // Sleep 100ms and check again to see if the connection is ready!
+                                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                                                 }
+                                            }
+                                                } => {}
                                             }
                                         });
                                     } else {
@@ -312,10 +414,14 @@ async fn run_proxy(tun_fd: i32, upstream: String, sni_hostname: String, blocklis
                 if err.kind() == std::io::ErrorKind::WouldBlock {
                     guard.clear_ready();
                 } else {
+                    log_trace(&format!("Read error: {}", err));
                     break;
                 }
             }
-            _ => break, // n == 0: EOF / TUN closed
+            _ => {
+                log_trace("TUN closed / EOF");
+                break;
+            }
         }
             } // end res = async_fd.readable()
         } // end tokio::select!

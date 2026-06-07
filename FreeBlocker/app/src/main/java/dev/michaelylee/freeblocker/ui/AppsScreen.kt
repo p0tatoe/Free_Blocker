@@ -84,7 +84,7 @@ fun AppsScreen(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val whitelistedApps by viewModel.whitelistedApps.collectAsState()
+    val filteredApps by viewModel.filteredApps.collectAsState()
 
     // Resolve installed apps off the main thread
     var installedApps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
@@ -108,18 +108,22 @@ fun AppsScreen(
     var searchQuery by remember { mutableStateOf("") }
     var showSystemApps by remember { mutableStateOf(false) }
 
-    val filteredApps = remember(installedApps, searchQuery, showSystemApps, whitelistedApps) {
+    val displayedApps = remember(installedApps, searchQuery, showSystemApps, filteredApps) {
         installedApps
             .filter { app ->
-                // Always show whitelisted apps, even if they're system apps
-                val isWhitelisted = app.packageName in whitelistedApps
-                if (!showSystemApps && app.isSystemApp && !isWhitelisted) return@filter false
+                // Always show targeted apps, even if they're system apps
+                val isFiltered = app.packageName in filteredApps
+                if (!showSystemApps && app.isSystemApp && !isFiltered) return@filter false
                 if (searchQuery.isBlank()) return@filter true
                 app.label.contains(searchQuery, ignoreCase = true) ||
                     app.packageName.contains(searchQuery, ignoreCase = true)
             }
-            .sortedWith(compareByDescending<AppInfo> { it.packageName in whitelistedApps }
+            .sortedWith(compareByDescending<AppInfo> { it.packageName in filteredApps }
                 .thenBy { it.label.lowercase() })
+    }
+
+    val hasUnsupportedBrowsers = remember(installedApps) {
+        installedApps.any { it.packageName == "com.brave.browser" || it.packageName == "org.mozilla.firefox" }
     }
 
     var showInfoDialog by remember { mutableStateOf(false) }
@@ -133,12 +137,12 @@ fun AppsScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "App Whitelist Info",
+                        text = "Targets Info",
                         style = MaterialTheme.typography.titleLarge
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Whitelisted apps bypass the VPN — their traffic won't be filtered.\n\nNote: Android Auto is whitelisted by default.",
+                        text = "Selected target apps will have their traffic routed through the VPN to be filtered. Apps that are NOT selected will bypass the VPN entirely.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Spacer(modifier = Modifier.height(8.dp))
@@ -172,7 +176,7 @@ fun AppsScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text  = "App Whitelist",
+                text  = "Targets",
                 style = MaterialTheme.typography.headlineSmall,
             )
             Spacer(Modifier.weight(1f))
@@ -201,6 +205,31 @@ fun AppsScreen(
             singleLine    = true,
             shape         = RoundedCornerShape(12.dp),
         )
+
+        if (hasUnsupportedBrowsers) {
+            androidx.compose.material3.Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                colors = androidx.compose.material3.CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer
+                )
+            ) {
+                Row(modifier = Modifier.padding(16.dp)) {
+                    Icon(
+                        imageVector = androidx.compose.material.icons.Icons.Outlined.Info,
+                        contentDescription = "Warning",
+                        tint = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "Brave and Firefox are not supported as they use their own secure DNS which bypasses the local VPN.",
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
 
         // ── Filter chips ──────────────────────────────────────────────────
         Row(
@@ -234,18 +263,18 @@ fun AppsScreen(
                 contentPadding = PaddingValues(vertical = 4.dp),
             ) {
                 items(
-                    items = filteredApps,
+                    items = displayedApps,
                     key   = { it.packageName },
                 ) { app ->
                     AppRow(
                         app           = app,
-                        isWhitelisted = app.packageName in whitelistedApps,
+                        isFiltered    = app.packageName in filteredApps,
                         onToggle      = { checked ->
-                            viewModel.setAppWhitelisted(app.packageName, checked)
+                            viewModel.setAppFiltered(app.packageName, checked)
                             coroutineScope.launch {
                                 snackbarHostState.currentSnackbarData?.dismiss()
                                 snackbarHostState.showSnackbar(
-                                    message = if (checked) "${app.label} added to whitelist" else "${app.label} removed from whitelist",
+                                    message = if (checked) "${app.label} added to targets" else "${app.label} removed from targets",
                                     duration = androidx.compose.material3.SnackbarDuration.Short
                                 )
                             }
@@ -261,13 +290,13 @@ fun AppsScreen(
 @Composable
 private fun AppRow(
     app: AppInfo,
-    isWhitelisted: Boolean,
+    isFiltered: Boolean,
     onToggle: (Boolean) -> Unit,
 ) {
     Row(
         modifier            = Modifier
             .fillMaxWidth()
-            .clickable { onToggle(!isWhitelisted) }
+            .clickable { onToggle(!isFiltered) }
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment   = Alignment.CenterVertically,
     ) {
@@ -299,7 +328,7 @@ private fun AppRow(
         Spacer(Modifier.width(8.dp))
 
         Checkbox(
-            checked    = isWhitelisted,
+            checked    = isFiltered,
             onCheckedChange = null,
         )
     }

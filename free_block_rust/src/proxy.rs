@@ -1,4 +1,4 @@
-use etherparse::{PacketBuilder, SlicedPacket, NetSlice, TransportSlice};
+use etherparse::{PacketBuilder, SlicedPacket, TransportSlice};
 
 // Quick zero-copy DNS name extractor
 pub fn extract_dns_name(payload: &[u8]) -> Option<&[u8]> {
@@ -259,7 +259,7 @@ pub fn create_tcp_rst(sliced: &SlicedPacket) -> Option<Vec<u8>> {
     let mut buf = Vec::with_capacity(128);
     match sliced.net.as_ref()? {
         InternetSlice::Ipv4(ipv4) => {
-            let mut ipv4_resp = Ipv4Header::new(
+            let ipv4_resp = Ipv4Header::new(
                 tcp_resp.header_len() as u16,
                 64,
                 etherparse::IpNumber::TCP,
@@ -289,6 +289,7 @@ pub fn create_tcp_rst(sliced: &SlicedPacket) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+#[allow(dead_code)]
 pub fn create_icmp_unreachable(sliced: &SlicedPacket, raw_packet: &[u8]) -> Option<Vec<u8>> {
     use etherparse::{Ipv4Header, Ipv6Header, Icmpv4Header, Icmpv4Type, icmpv4, Icmpv6Header, Icmpv6Type, icmpv6, InternetSlice};
     
@@ -312,7 +313,7 @@ pub fn create_icmp_unreachable(sliced: &SlicedPacket, raw_packet: &[u8]) -> Opti
             icmp_bytes[2] = cksum_bytes[0];
             icmp_bytes[3] = cksum_bytes[1];
             
-            let mut ipv4_resp = Ipv4Header::new(
+            let ipv4_resp = Ipv4Header::new(
                 (icmp_bytes.len() + original_bytes.len()) as u16,
                 64,
                 etherparse::IpNumber::ICMP,

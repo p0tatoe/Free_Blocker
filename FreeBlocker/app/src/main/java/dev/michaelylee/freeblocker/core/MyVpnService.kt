@@ -27,6 +27,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
@@ -56,6 +58,7 @@ class MyVpnService : VpnService() {
         const val ACTION_START         = "dev.michaelylee.freeblocker.START"
         const val ACTION_STOP          = "dev.michaelylee.freeblocker.STOP"
         const val ACTION_SET_BLOCKING  = "dev.michaelylee.freeblocker.SET_BLOCKING"
+        const val ACTION_FLUSH_DNS_CACHE = "dev.michaelylee.freeblocker.FLUSH_DNS_CACHE"
         const val EXTRA_BLOCKING_ENABLED = "blocking_enabled"
 
         private const val NOTIFICATION_ID      = 1
@@ -85,19 +88,14 @@ class MyVpnService : VpnService() {
             ACTION_SET_BLOCKING -> {
                 val enabled = intent.getBooleanExtra(EXTRA_BLOCKING_ENABLED, true)
                 isBlockingEnabled = enabled
-                if (enabled) {
-                    dnsProxy?.updateBlocklist(dnsFilter.getBlocklist())
-                } else {
-                    dnsProxy?.updateBlocklist(emptyList())
-                }
                 Log.i(TAG, "Blocking ${if (enabled) "enabled" else "disabled"}")
-
-                // When toggling blocking, rebuild the TUN interface to flush
-                // the system DNS cache. Without this, cached DNS results from
-                // the previous period prevent domains from being re-queried
-                // until their TTL expires.
                 if (vpnInterface != null) {
-                    serviceScope.launch { rebuildTunInterface() }
+                    debounceRebuild()
+                }
+            }
+            ACTION_FLUSH_DNS_CACHE -> {
+                if (vpnInterface != null) {
+                    debounceRebuild()
                 }
             }
         }
@@ -193,7 +191,40 @@ class MyVpnService : VpnService() {
 
         serviceScope.launch {
             val upstreamConfig = userPreferences.getUpstreamConfig()
-            dnsProxy = DnsProxy(fd, upstreamConfig.host, upstreamConfig.sniHostname)
+            
+            // Resolve IP outside the VPN tunnel using physical network to avoid loop
+            var resolvedIp = upstreamConfig.host
+            try {
+                val activeNetwork = connectivityManager?.activeNetwork
+                if (activeNetwork != null) {
+                    val addresses = activeNetwork.getAllByName(upstreamConfig.host)
+                    if (addresses.isNotEmpty()) {
+                        resolvedIp = addresses[0].hostAddress ?: upstreamConfig.host
+                    }
+                } else {
+                    val addresses = java.net.InetAddress.getAllByName(upstreamConfig.host)
+                    if (addresses.isNotEmpty()) {
+                        resolvedIp = addresses[0].hostAddress ?: upstreamConfig.host
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to resolve upstream IP", e)
+            }
+
+            Log.i(TAG, "Resolved upstream ${upstreamConfig.host} to $resolvedIp")
+            
+            // Pass resolved IP, but keep SNI hostname for the QUIC handshake
+            dnsProxy = DnsProxy(fd, resolvedIp, upstreamConfig.sniHostname)
+            
+            val proxy = dnsProxy
+            if (proxy != null) {
+                val quicFd = proxy.getQuicFd()
+                if (protect(quicFd)) {
+                    Log.i(TAG, "Protected QUIC socket (fd: $quicFd) from VPN tunnel")
+                } else {
+                    Log.e(TAG, "Failed to protect QUIC socket (fd: $quicFd) from VPN tunnel")
+                }
+            }
             
             dnsFilter.rustProxyCallback = { domains ->
                 if (isBlockingEnabled) {
@@ -208,6 +239,17 @@ class MyVpnService : VpnService() {
         }
     }
 
+    private val rebuildMutex = Mutex()
+    private var rebuildJob: Job? = null
+
+    private fun debounceRebuild() {
+        rebuildJob?.cancel()
+        rebuildJob = serviceScope.launch {
+            kotlinx.coroutines.delay(500)
+            rebuildTunInterface()
+        }
+    }
+
     /**
      * Tears down and re-establishes the TUN interface.
      *
@@ -218,24 +260,26 @@ class MyVpnService : VpnService() {
      * instead of using stale cached results.
      */
     private suspend fun rebuildTunInterface() {
-        Log.i(TAG, "Rebuilding TUN to flush DNS cache…")
+        rebuildMutex.withLock {
+            Log.i(TAG, "Rebuilding TUN to flush DNS cache…")
 
-        dnsProxy?.stop()
-        dnsProxy = null
+            dnsProxy?.stop()
+            dnsProxy = null
 
-        try {
-            vpnInterface?.close()
-        } catch (e: IOException) {
-            Log.w(TAG, "Error closing old TUN fd", e)
+            try {
+                vpnInterface?.close()
+            } catch (e: IOException) {
+                Log.w(TAG, "Error closing old TUN fd", e)
+            }
+
+            vpnInterface = buildTunInterface() ?: run {
+                Log.e(TAG, "Failed to re-establish TUN after blocking re-enabled")
+                return
+            }
+
+            startTunLoop()
+            Log.i(TAG, "TUN rebuilt — DNS cache flushed")
         }
-
-        vpnInterface = buildTunInterface() ?: run {
-            Log.e(TAG, "Failed to re-establish TUN after blocking re-enabled")
-            return
-        }
-
-        startTunLoop()
-        Log.i(TAG, "TUN rebuilt — DNS cache flushed")
     }
 
     /**
@@ -254,10 +298,9 @@ class MyVpnService : VpnService() {
             .addAddress("10.0.0.2", 32)
             .addDnsServer("10.0.0.1")
             .addRoute("10.0.0.1", 32)  // Route DNS traffic through TUN to our packet router
-            // IPv6 Setup
-            .addAddress("fd00::1", 128)
-            .addDnsServer("fd00::1")
-            .addRoute("fd00::1", 128)
+
+            // Allow IPv6 to bypass the VPN natively without advertising fake IPv6 capabilities
+            .allowFamily(android.system.OsConstants.AF_INET6)
 
             .setMtu(1500)
 
@@ -270,35 +313,61 @@ class MyVpnService : VpnService() {
         // Allow apps to explicitly bypass the VPN to fix Google SMS / RCS
         builder.allowBypass()
 
-        // Exclude whitelisted apps from the VPN tunnel
-        val whitelistedApps = userPreferences.getWhitelistedApps()
-        for (packageName in whitelistedApps) {
+        // Only include target apps in the VPN tunnel
+        val filteredApps = userPreferences.getFilteredApps()
+        if (filteredApps.isEmpty()) {
+            // If no apps are selected, Android routes all apps by default.
+            // To prevent this and truly route nothing, we add our own app as the only allowed app.
             try {
-                builder.addDisallowedApplication(packageName)
-                Log.d(TAG, "Excluded app from VPN: $packageName")
+                builder.addAllowedApplication(packageName)
+                Log.d(TAG, "No apps targeted. Routing only FreeBlocker to keep VPN idle.")
             } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
-                Log.w(TAG, "Skipping unknown package: $packageName")
+                Log.w(TAG, "Could not add self to allowed applications")
+            }
+        } else {
+            for (pkg in filteredApps) {
+                try {
+                    builder.addAllowedApplication(pkg)
+                    Log.d(TAG, "Included app in VPN: $pkg")
+                } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
+                    Log.w(TAG, "Skipping unknown package: $pkg")
+                }
             }
         }
 
         return builder.establish()
     }
 
+    private var activePhysicalNetwork: Network? = null
+
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            Log.i(TAG, "Network change detected — draining upstream connection pool")
-            setUnderlyingNetworks(arrayOf(network))
+            val caps = connectivityManager?.getNetworkCapabilities(network)
+            if (caps == null || !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                Log.w(TAG, "Ignoring network $network because it lacks INTERNET capability")
+                return
+            }
 
-            // The Silver Bullet: Bind the entire VPN process to the physical network.
-            // This natively forces all C++ (Cronet) and Java (OkHttp) sockets to bypass the VPN.
-            connectivityManager?.bindProcessToNetwork(network)
+            if (network == activePhysicalNetwork) {
+                Log.d(TAG, "Ignoring duplicate onAvailable for network $network")
+                return
+            }
+
+            Log.i(TAG, "Network change detected: $network — draining upstream connection pool")
+            activePhysicalNetwork = network
+            setUnderlyingNetworks(arrayOf(network))
             
-            // Connections will be re-established lazily on next query
+            // Rebuild the TUN interface to tear down the old proxy and start a fresh one,
+            // which creates a new UDP socket that properly inherits the new network routing.
+            // This also flushes the stale DNS cache which is vital when moving between networks.
+            debounceRebuild()
         }
 
         override fun onLost(network: Network) {
-            // Unbind when the network drops
-            connectivityManager?.bindProcessToNetwork(null)
+            if (network == activePhysicalNetwork) {
+                Log.w(TAG, "Active physical network lost: $network")
+                activePhysicalNetwork = null
+            }
         }
     }
 
@@ -306,10 +375,16 @@ class MyVpnService : VpnService() {
 
     private fun registerNetworkCallback() {
         connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager
-        val request = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .build()
-        connectivityManager?.registerNetworkCallback(request, networkCallback)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            // Tracking the default network perfectly aligns with protect(fd) routing
+            connectivityManager?.registerDefaultNetworkCallback(networkCallback)
+        } else {
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .build()
+            connectivityManager?.registerNetworkCallback(request, networkCallback)
+        }
         Log.d(TAG, "Network callback registered")
     }
 

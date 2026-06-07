@@ -5,8 +5,8 @@ package dev.michaelylee.freeblocker.core
  * 
  * @param host        IP address of the upstream server.
  * @param doqPort     QUIC port for DoQ (default 853).
- * @param sniHostname TLS SNI hostname used for DoQ (e.g. "cloudflare-dns.com").
- * @param dohUrl      Full HTTPS URL for DoH (e.g. "https://cloudflare-dns.com/dns-query").
+ * @param sniHostname TLS SNI hostname used for DoQ (e.g. "dns.adguard-dns.com").
+ * @param dohUrl      Full HTTPS URL for DoH (e.g. "https://dns.adguard-dns.com/dns-query").
  */
 data class UpstreamConfig(
     val host        : String = "94.140.14.14",
@@ -20,7 +20,7 @@ data class UpstreamConfig(
         /**
          * Encodes this config to a single string for DataStore persistence.
          * Format: "host|doqPort|sniHostname|dohUrl"
-         * Example: "1.1.1.1|853|cloudflare-dns.com|https://cloudflare-dns.com/dns-query"
+         * Example: "94.140.14.14|853|dns.adguard-dns.com|https://dns.adguard-dns.com/dns-query"
          */
         fun encode(config: UpstreamConfig): String = listOf(
             config.host,
