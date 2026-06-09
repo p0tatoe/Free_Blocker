@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22.1)
 project("freeblocker_rust_jni")
 
-get_filename_component(RUST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../free_block_rust" ABSOLUTE)
+get_filename_component(RUST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../rust" ABSOLUTE)
 
 if(${ANDROID_ABI} STREQUAL "arm64-v8a")
     set(RUST_TARGET "aarch64-linux-android")
