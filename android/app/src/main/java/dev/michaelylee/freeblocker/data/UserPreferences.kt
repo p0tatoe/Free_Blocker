@@ -43,7 +43,13 @@ class UserPreferences(private val context: Context) {
         val DEFAULT_UPSTREAM = UpstreamConfig()
 
         /** Apps that bypass the VPN entirely. */
-        val DEFAULT_BYPASSED_APPS = emptySet<String>()
+        val DEFAULT_BYPASSED_APPS = setOf(
+            "com.google.android.gms",
+            "com.google.android.gsf",
+            "com.google.android.networkstack",
+            "com.google.android.captiveportallogin",
+            "com.google.android.projection.gearhead"
+        )
     }
 
 

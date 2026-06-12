@@ -388,11 +388,6 @@ class MyVpnService : VpnService() {
         
         // Critical system packages that must bypass the VPN to maintain connectivity signalling
         val systemBypasses = listOf(
-            "com.google.android.gms",
-            "com.google.android.gsf",
-            "com.google.android.networkstack",
-            "com.google.android.captiveportallogin",
-            "com.google.android.projection.gearhead", // Android Auto
             packageName // FreeBlocker itself
         )
         bypassedApps.addAll(systemBypasses)
